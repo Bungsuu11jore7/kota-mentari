@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kota Mentari</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a0f2e; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .hidden { display: none !important; }
+  #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; z-index: 5; }
+  #hud-top-left { position: absolute; top: 14px; left: 16px; display: flex; flex-direction: column; gap: 6px; }
+  #health-bar { width: 220px; height: 16px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.5); border-radius: 8px; overflow: hidden; }
+  #health-fill { height: 100%; width: 100%; background: #4ade80; transition: width .2s; }
+  #health-text { font-weight: 700; font-size: 15px; text-shadow: 0 1px 3px #000; }
+  #money-text { font-weight: 800; font-size: 22px; color: #4ade80; text-shadow: 0 1px 3px #000; }
+  #weapon-text { font-size: 13px; opacity: .9; text-shadow: 0 1px 3px #000; }
+  #hud-wanted { position: absolute; top: 12px; right: 18px; font-size: 30px; letter-spacing: 2px; text-shadow: 0 2px 4px #000; }
+  #hud-wanted .star { color: rgba(255,255,255,.25); }
+  #hud-wanted .star.active { color: #ffd43b; }
+  #hud-objective { position: absolute; left: 16px; bottom: 16px; max-width: 420px; background: rgba(0,0,0,.55); border-left: 4px solid #ffd43b; padding: 10px 14px; border-radius: 6px; }
+  #hud-objective::before { content: "MISI"; display: block; font-size: 11px; letter-spacing: 2px; color: #ffd43b; font-weight: 800; }
+  #objective-text { font-size: 16px; font-weight: 600; }
+  #hud-minimap { position: absolute; right: 16px; bottom: 16px; border: 2px solid rgba(255,255,255,.6); border-radius: 8px; overflow: hidden; background: rgba(8,18,24,.85); }
+  #minimap { display: block; width: 200px; height: 200px; }
+  #hud-speed { position: absolute; right: 16px; bottom: 232px; font-size: 26px; font-weight: 800; text-shadow: 0 2px 4px #000; }
+  #hud-message { position: absolute; top: 22%; left: 50%; transform: translateX(-50%); font-size: 24px; font-weight: 800; color: #ffd43b; text-shadow: 0 2px 6px #000; white-space: nowrap; }
+  .overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: #fff; background: rgba(10, 6, 24, .72); padding: 24px; }
+  .overlay h1 { margin: 0 0 6px; font-size: 64px; letter-spacing: 6px; color: #ffb347; text-shadow: 0 4px 24px rgba(255,140,0,.6); }
+  .overlay h2 { margin: 0 0 12px; font-size: 40px; letter-spacing: 3px; color: #ffb347; }
+  .overlay p { max-width: 560px; font-size: 17px; line-height: 1.55; margin: 6px 0; }
+  .overlay .controls { font-size: 14px; line-height: 1.9; background: rgba(0,0,0,.45); border-radius: 8px; padding: 10px 22px; margin: 14px 0; }
+  .overlay .press { font-size: 20px; font-weight: 800; color: #ffd43b; margin-top: 10px; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .overlay button { pointer-events: auto; margin-top: 12px; font-size: 18px; font-weight: 700; padding: 12px 28px; border: none; border-radius: 8px; background: #ffb347; color: #1a0f2e; cursor: pointer; }
+  .overlay button:hover { background: #ffd43b; }
+  .overlay .row { display: flex; gap: 12px; }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+</style>
+<script type="importmap">
+{"imports": {"three": "./vendor/three.module.min.js"}}
+</script>
+</head>
+<body>
+<canvas id="game" aria-label="Kota Mentari: open-world crime 3D, jalan kaki dan mengemudi di kota pesisir tropis"></canvas>
+
+<div id="hud">
+  <div id="hud-top-left">
+    <div id="health-bar"><div id="health-fill"></div></div>
+    <span id="health-text">❤ 100</span>
+    <div id="money-text">$0</div>
+    <div id="weapon-text">✊ Tinju [1]</div>
+  </div>
+  <div id="hud-wanted"><span id="wanted-star-0" class="star">★</span><span id="wanted-star-1" class="star">★</span><span id="wanted-star-2" class="star">★</span><span id="wanted-star-3" class="star">★</span><span id="wanted-star-4" class="star">★</span></div>
+  <div id="hud-objective"><div id="objective-text">Pergi ke penanda kuning</div></div>
+  <div id="hud-speed" class="hidden"><span id="speed-value">0 km/h</span></div>
+  <div id="hud-minimap"><canvas id="minimap" width="200" height="200"></canvas></div>
+  <div id="hud-message" class="hidden"></div>
+</div>
+
+<div id="overlay-start" class="overlay">
+  <h1>KOTA MENTARI</h1>
+  <p>Kota pesisir tropis tempat matahari tak pernah benar-benar tenggelam — dan utang tak pernah benar-benar lunas.</p>
+  <p>Raka Pratama, kurir biasa, baru saja menerima paket yang salah. Bos Darma menginginkannya kembali. Geng Ombak menginginkannya mati. Mira Santosa, satu-satunya orang yang masih percaya padanya, menunggu di ujung kota.</p>
+  <p>Antar paketnya. Curi mobilnya. Kabur dari polisinya. Pulang dengan selamat.</p>
+  <div class="controls">WASD jalan / mengemudi &nbsp;·&nbsp; Shift lari &nbsp;·&nbsp; E masuk / keluar mobil<br>Space handbrake &nbsp;·&nbsp; F pukul &nbsp;·&nbsp; Klik mouse tembak &nbsp;·&nbsp; 1 / 2 ganti senjata<br>P / Esc jeda &nbsp;·&nbsp; M bisu</div>
+  <div class="press">Tekan Enter untuk mulai</div>
+  <div class="row">
+    <button id="btn-continue" class="hidden">Lanjutkan</button>
+    <button id="btn-new">Mulai Baru</button>
+  </div>
+</div>
+
+<div id="overlay-pause" class="overlay hidden">
+  <h2>JEDA</h2>
+  <p>Kota menunggu. Raka tidak.</p>
+  <div class="press">Tekan P untuk lanjut</div>
+  <button id="btn-resume">Lanjutkan</button>
+</div>
+
+<div id="overlay-over" class="overlay hidden">
+  <h2>GAME OVER</h2>
+  <p id="over-reason"></p>
+  <button id="btn-restart">Coba Lagi</button>
+</div>
+
+<div id="overlay-busted" class="overlay hidden">
+  <h2>BUSTED</h2>
+  <p>Polisi menangkap Raka. Bos Darma tersenyum di suatu tempat.</p>
+  <button id="btn-restart-busted">Coba Lagi</button>
+</div>
+
+<div id="overlay-complete" class="overlay hidden">
+  <h2 id="complete-title">MISI SELESAI</h2>
+  <p id="complete-reward"></p>
+  <div class="press">Tekan Enter untuk misi berikutnya</div>
+  <button id="btn-next-mission">Misi Berikutnya</button>
+</div>
+
+<p id="status" role="status" aria-live="polite"></p>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
