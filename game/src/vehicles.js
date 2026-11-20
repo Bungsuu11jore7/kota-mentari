@@ -1,260 +1,254 @@
-// vehicles.js — Kendaraan "KOTA MENTARI" (gta6-01, Lane B).
-// Mobil low-poly orisinal (body + kabin + 4 roda + lampu), fisika arcade:
-// akselerasi, belok sebanding kecepatan, handbrake = drift, tabrak gedung =
-// berhenti + damage. three.js r170, nol aset/network eksternal.
-import * as THREE from 'three';
+// Kota Mentari — vehicles.js (Lane B, v4)
+// Pembuat mobil (badan balok + kabin + roda hitam), keadaan mobil,
+// pemuncul mobil di titik jalan, dan penggerak mobil sepanjang jalan.
+// Kecepatan mengikuti dokumen desain: mobil biasa sampai 30,
+// mobil polisi sampai 32.
+import * as THREE from '../vendor/three.module.min.js';
+import { ROAD_LINES, PIER_CORRIDOR } from './world.js';
 
-// Dimensi mobil (satuan dunia: 1 unit = 1 meter-ish, jalan tiap 100 unit).
-const CAR_LENGTH = 4.4;
-const CAR_WIDTH = 2.0;
-const BODY_HEIGHT = 0.85;
-const BODY_Y = 0.65; // pusat body di atas tanah (roda radius 0.42)
-const CABIN_LENGTH = 2.2;
-const CABIN_WIDTH = 1.7;
-const CABIN_HEIGHT = 0.7;
-const WHEEL_RADIUS = 0.42;
-const WHEEL_WIDTH = 0.32;
+// ---------------------------------------------------------------------------
+// Konstanta kendaraan (dari dokumen desain)
+// ---------------------------------------------------------------------------
+export const MAX_CIVIL_SPEED = 30;
+export const MAX_POLICE_SPEED = 32;
+export const TARGET_COLOR = 0xff6a00; // oranye terang (mobil target misi 2)
+export const POLICE_BODY_COLOR = 0xf2f2f2; // putih (polisi hitam-putih)
 
-// Batas dunia (kontrak: grid 800x800, pusat 0,0).
-const WORLD_HALF = 396;
+// Warna mobil traffic yang bervariasi.
+export const TRAFFIC_COLORS = [
+  0x2f6fd0, // biru
+  0x2fae5f, // hijau
+  0xf2c200, // kuning
+  0xf2f2f2, // putih
+  0x222222, // hitam
+  0xd94f30, // merah bata
+  0x7a4fd0, // ungu
+];
 
-// Palet lampu.
-const HEADLIGHT_COLOR = 0xfff6c8;
-const TAILLIGHT_COLOR = 0xff2a22;
+const WHEEL_COLOR = 0x111111;
+const WINDOW_COLOR = 0x223344;
 
-function clamp(v, a, b) {
-  return v < a ? a : v > b ? b : v;
-}
-
-// Selisih sudut terpendek, hasil di [-PI, PI].
-function angleDiff(target, current) {
-  let d = target - current;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return d;
-}
-
-/**
- * Bangun satu mobil low-poly dan tambahkan ke scene.
- * opts: { color, x, z, heading, maxSpeed, accel, health, onCollide }
- * heading: radian; arah maju = (sin h, 0, cos h), rotation.y = heading.
- * Mengembalikan car { group, pos, heading, speed, slide, maxSpeed, accel,
- *   health, maxHealth, wheels, onCollide, driver }.
- * pos adalah group.position (Vector3 yang sama) supaya selalu sinkron.
- */
-export function createCar(scene, opts = {}) {
-  const color = opts.color !== undefined ? opts.color : 0xc23b2e;
-  const heading = opts.heading || 0;
+// ---------------------------------------------------------------------------
+// Pembuat mobil
+// ---------------------------------------------------------------------------
+// createCar(warna, jenis): jenis 'civil' | 'police' | 'target'.
+// Mengembalikan THREE.Group; keadaan mobil tersimpan di group.userData.car:
+// { type, color, heading, speed, targetSpeed, currentNode, nextNode, prevNode }.
+// Arah maju mobil adalah +Z lokal; heading 0 berarti menghadap +Z.
+export function createCar(color, type = 'civil') {
   const group = new THREE.Group();
-  group.position.set(opts.x || 0, 0, opts.z || 0);
-  group.rotation.y = heading;
+  const bodyColor = type === 'target' ? TARGET_COLOR : color;
+  const bodyMat = new THREE.MeshLambertMaterial({ color: bodyColor });
+  const darkMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a });
+  const glassMat = new THREE.MeshLambertMaterial({ color: WINDOW_COLOR });
 
-  const paint = new THREE.MeshLambertMaterial({ color });
-  const glass = new THREE.MeshLambertMaterial({ color: 0x1c2733 });
-  const dark = new THREE.MeshLambertMaterial({ color: 0x181818 });
-  const chrome = new THREE.MeshLambertMaterial({ color: 0xb8bec6 });
-
-  // Body utama.
-  const body = new THREE.Mesh(new THREE.BoxGeometry(CAR_LENGTH, BODY_HEIGHT, CAR_WIDTH), paint);
-  body.position.y = BODY_Y;
+  // Badan balok.
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.75, 4.4), bodyMat);
+  body.position.y = 0.65;
+  body.castShadow = true;
   group.add(body);
 
-  // Kabin (kaca) — sedikit ke belakang dari tengah.
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(CABIN_LENGTH, CABIN_HEIGHT, CABIN_WIDTH), glass);
-  cabin.position.set(-0.25, BODY_Y + BODY_HEIGHT / 2 + CABIN_HEIGHT / 2 - 0.05, 0);
+  // Kabin + kaca.
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.65, 2.2), glassMat);
+  cabin.position.set(0, 1.3, -0.2);
+  cabin.castShadow = true;
   group.add(cabin);
+  const cabinRoof = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.1, 2.25), bodyMat);
+  cabinRoof.position.set(0, 1.65, -0.2);
+  group.add(cabinRoof);
 
-  // Atap kabin sewarna body (tipis) supaya siluet lebih rapi.
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(CABIN_LENGTH * 0.9, 0.08, CABIN_WIDTH * 0.92), paint);
-  roof.position.set(-0.25, BODY_Y + BODY_HEIGHT / 2 + CABIN_HEIGHT - 0.02, 0);
-  group.add(roof);
-
-  // Bemper depan/belakang.
-  const bumperF = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.3, CAR_WIDTH * 0.96), chrome);
-  bumperF.position.set(CAR_LENGTH / 2 + 0.05, 0.42, 0);
-  group.add(bumperF);
-  const bumperB = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.3, CAR_WIDTH * 0.96), chrome);
-  bumperB.position.set(-CAR_LENGTH / 2 - 0.05, 0.42, 0);
-  group.add(bumperB);
-
-  // Lampu depan (emissive hangat) dan belakang (emissive merah).
-  const headMat = new THREE.MeshLambertMaterial({ color: 0xfff2b0, emissive: HEADLIGHT_COLOR, emissiveIntensity: 0.9 });
-  const tailMat = new THREE.MeshLambertMaterial({ color: 0x7a0d08, emissive: TAILLIGHT_COLOR, emissiveIntensity: 0.7 });
-  const lampGeo = new THREE.BoxGeometry(0.12, 0.22, 0.42);
-  for (const zSide of [-0.62, 0.62]) {
-    const head = new THREE.Mesh(lampGeo, headMat);
-    head.position.set(CAR_LENGTH / 2 + 0.02, 0.78, zSide);
+  // Lampu depan (menyala) dan lampu belakang merah.
+  const headMat = new THREE.MeshLambertMaterial({
+    color: 0xfff2b0, emissive: 0xfff2b0, emissiveIntensity: 0.7,
+  });
+  const tailMat = new THREE.MeshLambertMaterial({
+    color: 0xcc2222, emissive: 0xcc2222, emissiveIntensity: 0.5,
+  });
+  for (const side of [-0.65, 0.65]) {
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.1), headMat);
+    head.position.set(side, 0.65, 2.22);
     group.add(head);
-    const tail = new THREE.Mesh(lampGeo, tailMat);
-    tail.position.set(-CAR_LENGTH / 2 - 0.02, 0.78, zSide);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.1), tailMat);
+    tail.position.set(side, 0.65, -2.22);
     group.add(tail);
   }
 
-  // 4 roda: silinder diputar agar sumbunya sejajar sumbu Z mobil.
-  const wheelGeo = new THREE.CylinderGeometry(WHEEL_RADIUS, WHEEL_RADIUS, WHEEL_WIDTH, 12);
-  wheelGeo.rotateX(Math.PI / 2);
-  const wheels = [];
-  const wheelX = [CAR_LENGTH / 2 - 0.85, -CAR_LENGTH / 2 + 0.85];
-  const wheelZ = [CAR_WIDTH / 2 - 0.05, -CAR_WIDTH / 2 + 0.05];
-  for (const wx of wheelX) {
-    for (const wz of wheelZ) {
-      const wheel = new THREE.Mesh(wheelGeo, dark);
-      wheel.position.set(wx, WHEEL_RADIUS, wz);
+  // Roda hitam (4 buah).
+  const wheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.3, 12);
+  const wheelMat = new THREE.MeshLambertMaterial({ color: WHEEL_COLOR });
+  for (const wx of [-0.95, 0.95]) {
+    for (const wz of [-1.45, 1.45]) {
+      const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(wx, 0.38, wz);
       group.add(wheel);
-      wheels.push(wheel);
     }
   }
 
-  scene.add(group);
+  if (type === 'police') {
+    // Mobil polisi hitam-putih: kap dan bagasi hitam, palang lampu merah-biru.
+    const hood = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 1.0), darkMat);
+    hood.position.set(0, 1.06, 1.6);
+    group.add(hood);
+    const trunk = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.12, 0.9), darkMat);
+    trunk.position.set(0, 1.06, -1.7);
+    group.add(trunk);
+    const barBase = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.12, 0.35), darkMat);
+    barBase.position.set(0, 1.76, -0.2);
+    group.add(barBase);
+    const redLight = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.18, 0.3),
+      new THREE.MeshLambertMaterial({ color: 0xff2222, emissive: 0xff2222, emissiveIntensity: 0.9 }));
+    redLight.position.set(-0.32, 1.88, -0.2);
+    group.add(redLight);
+    const blueLight = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.18, 0.3),
+      new THREE.MeshLambertMaterial({ color: 0x2244ff, emissive: 0x2244ff, emissiveIntensity: 0.9 }));
+    blueLight.position.set(0.32, 1.88, -0.2);
+    group.add(blueLight);
+  }
 
-  const car = {
-    group,
-    pos: group.position, // Vector3 yang sama dengan group.position
-    heading,
+  group.userData.car = {
+    type,
+    color: bodyColor,
+    heading: 0,
     speed: 0,
-    slide: 0, // kecepatan lateral (drift), meluruh oleh grip
-    maxSpeed: opts.maxSpeed || 34,
-    accel: opts.accel || 20,
-    health: opts.health !== undefined ? opts.health : 100,
-    maxHealth: opts.health !== undefined ? opts.health : 100,
-    wheels,
-    onCollide: opts.onCollide || null,
-    driver: null,
-    // Dipakai traffic/polisi: kecepatan jelajah bila dikemudikan AI.
-    cruiseSpeed: 0,
+    targetSpeed: type === 'police' ? 20 : 14,
+    currentNode: -1,
+    nextNode: -1,
+    prevNode: -1,
   };
+  return group;
+}
+
+// Jalan pintas: mobil polisi hitam-putih.
+export function createPoliceCar() {
+  return createCar(POLICE_BODY_COLOR, 'police');
+}
+
+// Jalan pintas: mobil target oranye terang (misi 2).
+export function createTargetCar() {
+  return createCar(TARGET_COLOR, 'target');
+}
+
+// ---------------------------------------------------------------------------
+// Keadaan mobil
+// ---------------------------------------------------------------------------
+export function getCarState(car) {
+  return car.userData.car;
+}
+
+export function getCarSpeed(car) {
+  return car.userData.car.speed;
+}
+
+export function setCarTargetSpeed(car, speed) {
+  const cap = car.userData.car.type === 'police' ? MAX_POLICE_SPEED : MAX_CIVIL_SPEED;
+  car.userData.car.targetSpeed = Math.max(0, Math.min(cap, speed));
+}
+
+export function setCarSpeed(car, speed) {
+  car.userData.car.speed = Math.max(0, speed);
+}
+
+// ---------------------------------------------------------------------------
+// Pemuncul mobil di titik jalan
+// ---------------------------------------------------------------------------
+// Menempatkan mobil pada simpul jalan acak (di luar koridor dermaga bila
+// diminta) dan mengarahkannya ke simpul tetangga. rng: fungsi () => [0,1).
+function nodeInRect(node, rect) {
+  return node.x >= rect.minX && node.x <= rect.maxX
+    && node.z >= rect.minZ && node.z <= rect.maxZ;
+}
+
+export function spawnCarOnRoad(car, world, rng, avoidPierCorridor = true) {
+  const random = rng || Math.random;
+  const graph = world.graph;
+  let candidates = graph.nodes;
+  if (avoidPierCorridor) {
+    candidates = graph.nodes.filter((node) => !nodeInRect(node, PIER_CORRIDOR));
+  }
+  if (candidates.length === 0) candidates = graph.nodes;
+  const node = candidates[Math.floor(random() * candidates.length)];
+  const state = car.userData.car;
+  state.currentNode = node.id;
+  state.prevNode = -1;
+  car.position.set(node.x, 0, node.z);
+  state.nextNode = chooseNextNode(world, state, random, avoidPierCorridor);
+  const target = graph.nodes[state.nextNode];
+  state.heading = Math.atan2(target.x - node.x, target.z - node.z);
+  car.rotation.y = state.heading;
+  state.speed = 0;
+  state.targetSpeed = 12 + random() * 6;
   return car;
 }
 
-/**
- * Satu langkah fisika arcade.
- * input: { throttle (-1..1, + = gas), steer (-1..1, + = kiri),
- *          brake (bool), handbrake (bool, Space = drift) }
- * world: objek kontrak Lane A — dipakai isBlocked(x, z, r) bila ada.
- * Tabrakan gedung: mobil berhenti (pantul kecil), health berkurang
- * sebanding benturan, callback onCollide({ impact, car }) bila ada.
- */
-export function updateCar(car, input = {}, dt = 1 / 60, world = null) {
-  dt = Math.min(dt, 0.05);
-  const throttle = clamp(input.throttle || 0, -1, 1);
-  const steer = clamp(input.steer || 0, -1, 1);
-  const brake = !!input.brake;
-  const handbrake = !!input.handbrake;
-
-  const maxFwd = car.maxSpeed;
-  const maxRev = -car.maxSpeed * 0.38;
-
-  // --- Akselerasi / rem / drag ---
-  if (brake) {
-    // Rem: kecepatan menuju 0 dengan cepat.
-    const decel = 34 * dt;
-    car.speed = Math.abs(car.speed) <= decel ? 0 : car.speed - Math.sign(car.speed) * decel;
-  } else if (throttle !== 0) {
-    car.speed += throttle * car.accel * dt;
-  }
-  // Drag udara + rolling: selalu meluruhkan kecepatan.
-  car.speed -= car.speed * (handbrake ? 1.1 : 0.45) * dt;
-  if (Math.abs(car.speed) < 0.05 && throttle === 0) car.speed = 0;
-  car.speed = clamp(car.speed, maxRev, maxFwd);
-
-  // --- Belok: sebanding kecepatan (makin pelan makin susah belok) ---
-  const speedFactor = clamp(Math.abs(car.speed) / 10, 0, 1);
-  let turnRate = 2.3 * speedFactor;
-  if (handbrake) turnRate *= 1.75; // handbrake = putaran lebih liar
-  car.heading += steer * turnRate * Math.sign(car.speed || 1) * dt;
-
-  // --- Drift: handbrake sambil belok membangun slide lateral ---
-  const forwardX = Math.sin(car.heading);
-  const forwardZ = Math.cos(car.heading);
-  const rightX = Math.cos(car.heading);
-  const rightZ = -Math.sin(car.heading);
-  if (handbrake && Math.abs(car.speed) > 4) {
-    car.slide += steer * car.speed * 0.55 * dt;
-    car.slide = clamp(car.slide, -9, 9);
-  }
-  // Grip: slide meluruh cepat tanpa handbrake, lambat saat handbrake.
-  car.slide *= Math.max(0, 1 - (handbrake ? 1.4 : 5.0) * dt);
-
-  // --- Pindah posisi ---
-  let nx = car.pos.x + (forwardX * car.speed + rightX * car.slide) * dt;
-  let nz = car.pos.z + (forwardZ * car.speed + rightZ * car.slide) * dt;
-
-  // --- Tabrakan gedung / batas dunia ---
-  let blocked = false;
-  if (world && typeof world.isBlocked === 'function') {
-    blocked = world.isBlocked(nx, nz, 2.3);
-  }
-  if (!blocked && (Math.abs(nx) > WORLD_HALF || Math.abs(nz) > WORLD_HALF)) {
-    blocked = true;
-  }
-  if (blocked) {
-    const impact = Math.abs(car.speed) + Math.abs(car.slide) * 0.5;
-    if (impact > 3) {
-      const damage = (impact - 3) * 0.9;
-      car.health = Math.max(0, car.health - damage);
-      if (car.onCollide) {
-        try {
-          car.onCollide({ impact, damage, car });
-        } catch (e) {
-          // Callback suara/UI tidak boleh mematikan fisika.
-        }
-      }
-    }
-    // Berhenti + pantul kecil ke arah datang.
-    car.speed = -car.speed * 0.22;
-    car.slide *= 0.3;
-    nx = car.pos.x;
-    nz = car.pos.z;
-  }
-
-  car.pos.x = nx;
-  car.pos.z = nz;
-  car.group.rotation.y = car.heading;
-
-  // Putar roda sesuai kecepatan maju (visual saja).
-  const spin = (car.speed * dt) / WHEEL_RADIUS;
-  for (const wheel of car.wheels) {
-    wheel.rotation.z += spin;
-  }
-}
-
-/**
- * Pemain naik ke kursi pengemudi. player: objek Lane D
- * ({ pos: Vector3, group?: Object3D, inCar, car } — field opsional
- * ditangani defensif). Setelah ini player.inCar = car.
- */
-export function enterCar(player, car) {
-  if (!player || !car) return;
-  player.inCar = car;
-  player.car = car;
-  car.driver = player;
-  if (player.pos) {
-    player.pos.copy(car.pos);
-  }
-  if (player.group) {
-    player.group.visible = false;
-  }
-}
-
-/**
- * Pemain keluar ke samping mobil (sisi kanan pengemudi). Setelah ini
- * player.inCar = null dan figur pemain terlihat lagi.
- */
-export function exitCar(player, car) {
-  if (!player || !car) return;
-  const rightX = Math.cos(car.heading);
-  const rightZ = -Math.sin(car.heading);
-  if (player.pos) {
-    player.pos.set(car.pos.x + rightX * 3.0, 0, car.pos.z + rightZ * 3.0);
-    if (player.group) {
-      player.group.position.copy(player.pos);
+// ---------------------------------------------------------------------------
+// Penggerak mobil sepanjang jalan
+// ---------------------------------------------------------------------------
+// Memajukan mobil menuju simpul berikutnya; di persimpangan memilih sisi
+// jalan berikutnya secara acak (tidak putar balik bila ada pilihan lain).
+// avoidRects: daftar persegi {minX,maxX,minZ,maxZ} yang tidak boleh dilalui.
+function chooseNextNode(world, state, random, avoidPierCorridor = false, avoidRects = null) {
+  const neighbors = world.graph.adjacency[state.currentNode] || [];
+  let options = neighbors.filter((id) => id !== state.prevNode);
+  if (avoidPierCorridor || avoidRects) {
+    const rects = avoidRects ? avoidRects.slice() : [];
+    if (avoidPierCorridor) rects.push(PIER_CORRIDOR);
+    options = options.filter((id) => {
+      const node = world.graph.nodes[id];
+      return !rects.some((r) => nodeInRect(node, r));
+    });
+    if (options.length === 0) {
+      options = neighbors.filter((id) => id !== state.prevNode);
     }
   }
-  player.inCar = null;
-  player.car = null;
-  car.driver = null;
-  car.speed = 0;
-  if (player.group) {
-    player.group.visible = true;
+  if (options.length === 0) options = neighbors;
+  if (options.length === 0) return state.currentNode;
+  return options[Math.floor(random() * options.length)];
+}
+
+export function driveCar(car, world, dt, rng = null, avoidRects = null) {
+  const state = car.userData.car;
+  const random = rng || Math.random;
+  const graph = world.graph;
+  if (state.currentNode < 0 || state.nextNode < 0) {
+    spawnCarOnRoad(car, world, random);
+    return;
+  }
+  // Percepat / perlambat menuju kecepatan target.
+  const accel = 8;
+  if (state.speed < state.targetSpeed) {
+    state.speed = Math.min(state.targetSpeed, state.speed + accel * dt);
+  } else if (state.speed > state.targetSpeed) {
+    state.speed = Math.max(state.targetSpeed, state.speed - accel * 1.5 * dt);
+  }
+  const target = graph.nodes[state.nextNode];
+  const dx = target.x - car.position.x;
+  const dz = target.z - car.position.z;
+  const dist = Math.hypot(dx, dz);
+  const step = state.speed * dt;
+  if (dist <= Math.max(1.2, step)) {
+    // Tiba di persimpangan: lanjut ke sisi berikutnya.
+    car.position.x = target.x;
+    car.position.z = target.z;
+    state.prevNode = state.currentNode;
+    state.currentNode = state.nextNode;
+    state.nextNode = chooseNextNode(world, state, random, false, avoidRects);
+    const next = graph.nodes[state.nextNode];
+    state.heading = Math.atan2(next.x - target.x, next.z - target.z);
+    car.rotation.y = state.heading;
+  } else {
+    const nx = dx / dist;
+    const nz = dz / dist;
+    car.position.x += nx * step;
+    car.position.z += nz * step;
+    const wantedHeading = Math.atan2(nx, nz);
+    // Putar halus menuju arah jalan (hindari lompatan sudut).
+    let diff = wantedHeading - state.heading;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    state.heading += diff * Math.min(1, dt * 8);
+    car.rotation.y = state.heading;
   }
 }

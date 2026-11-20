@@ -1,445 +1,575 @@
-// KOTA MENTARI — sistem misi & cerita.
-// Enam misi orisinal mengikuti perjalanan Raka Pratama, kurir Kota Mentari,
-// dari paket pertama sampai pelayaran terakhirnya. Semua nama, dialog dan
-// lokasi adalah fiksi orisinal; tidak ada kaitan dengan game lain.
+// KOTA MENTARI — Modul misi (Lane C, v4)
 //
-// Kontrak: createMissions(world, scene, hooks) -> {
-//   list, start(i), update(dt, ctx), currentObjective(), onComplete, onFail,
-//   fail(reason), save(), load(data), marker, active, objectiveIndex
-// }
-// ctx yang masuk ke update(): { playerPos:{x,z}, playerInCar, wanted, enemiesAlive }
-// hooks (opsional): { onSetWanted(n), onSpawnEnemies([{x,z,jacket}]), onMessage(text) }
-// onComplete(index, reward) dan onFail(reason) adalah properti yang bisa
-// di-assign oleh main.js; default-nya no-op sehingga aman dipanggil.
+// Alur 6 misi berurutan. Satu-satunya sumber kebenaran adalah dokumen
+// desain: nama, urutan, hadiah, dan target misi di bawah ini PERSIS
+// seperti yang tertulis di sana. Total hadiah 29700.
 //
-// v3: currentObjective() TIDAK PERNAH mengembalikan null saat ada misi yang
-// bisa ditampilkan — teks objective selalu mencerminkan misi aktif saat ini,
-// dan saat semua misi selesai ia mengembalikan "Semua misi selesai!".
-// Sebelum v3, currentObjective() mengembalikan null begitu misi selesai
-// (active = -1), sehingga main.js jatuh ke teks fallback generik yang basi
-// dan tidak mencerminkan progres pemain.
+// Kontrak dengan lane lain (modul utama, player, combat, HUD):
+//   - Nama Lane B yang dipakai di sini, persis seperti kontrak:
+//     getShipPosition (world) untuk posisi kapal misi 6 — dipanggil
+//     dengan game.world dari buildCity bila ada; bila dunia belum
+//     tersedia atau panggilannya gagal, dipakai posisi kapal dari
+//     dokumen desain (X 470, Z 350) sebagai cadangan. Koridor dermaga
+//     dijamin bersih dari halangan oleh modul world, jadi kapal selalu
+//     bisa dicapai.
+//   - Modul utama membuat keadaan lewat createMissionState, memulai misi
+//     lewat startMission, memanggil updateMissions tiap frame, dan membaca
+//     teks objective lewat getObjectiveText untuk HUD.
+//   - Modul player / combat memberi tahu kejadian lewat onCarStolen dan
+//     onEnemyDefeated.
+//   - Objek game yang diteruskan ke fungsi-fungsi di sini berbentuk:
+//       game.player  : { x, z, speed, health, money, inCar }
+//       game.chaseTarget : { x, z } | null  (mobil target misi 3)
+//       game.showToast(teks) : tampilkan banner kuning (opsional)
+//       game.saveGame() : simpan nomor misi berikut + uang (opsional)
+//       game.addMoney(jumlah) : tambah uang pemain (opsional)
+//       game.spawnChaseTarget() : munculkan mobil target misi 3 (opsional)
+//       game.spawnAttackers(jumlah, x, z) : munculkan penyerang (opsional)
+//       game.setWanted(tingkat) : atur wanted polisi (opsional)
+//       game.audio : { playFanfare(), playPickup() } (opsional)
+//       game.onAllMissionsComplete() : dipanggil saat misi 6 selesai,
+//         modul utama lalu menampilkan layar TAMAT (opsional)
+//   - Semua callback di atas opsional: bila tidak ada, modul ini tetap
+//     berjalan (uang diubah langsung di game.player.money).
 
-import * as THREE from 'three';
+import { getShipPosition } from './world.js';
 
 // ---------------------------------------------------------------------------
-// Data misi
+// Konstanta misi (dari dokumen desain)
 // ---------------------------------------------------------------------------
 
-const REWARDS = [500, 1200, 2000, 3000, 8000, 15000];
+// Posisi kapal di dermaga Pelabuhan (dokumen desain: X 470, Z 350).
+export const SHIP_POSITION = { x: 470, z: 350 };
+export const SHIP_RADIUS = 12;
 
-function buildMissions(spawn) {
-  const harbor = spawn.harbor || { x: -360, z: 0 };
-  const hideout = spawn.hideout || { x: 300, z: 300 };
-  // B-1 (v2): kapal HARUS di titik yang bisa dicapai jalan kaki — tepat di
-  // koridor dermaga (x 396-524, z 344-356, lihat world.isBlocked). Posisi
-  // lama (harbor.x-20, harbor.z+60) = (450,410) berada di luar batas dunia
-  // yang bisa dilalui (|z|>396), jadi objektif tak pernah tercapai.
-  // spawn.harbor dunia adalah (470, 350): kapal dan tas misi 5 sama-sama
-  // di titik itu.
-  const ship = { x: harbor.x, z: harbor.z };
+// Jarak sentuh penanda misi.
+export const MARKER_RADIUS = 6;
 
-  return [
-    {
-      id: 0,
-      title: 'Paket Kilat',
-      reward: REWARDS[0],
-      wanted: 0,
-      briefing:
-        'Tujuan: antar tiga paket sebagai kurir lepas. Ambil paket di gudang ' +
-        'Pasar Lama, lalu antar ke Warung Bu Sari di Menara, Toko Kelontong ' +
-        'di Pesisir, dan Kios Pelabuhan. Hadiah: $500.',
-      dialog: [
-        { who: 'Mira', line: 'Raka, tiga paket, tiga alamat. Jangan sampai ada yang nyasar, ya.' },
-        { who: 'Raka', line: 'Tenang. Kota ini sudah kuhafal sampai gang terkecilnya.' },
-        { who: 'Mira', line: 'Ambil paketnya di gudang Pasar Lama, lalu ikuti panah kuningnya.' },
-      ],
-      objectives: [
-        { text: 'Ambil paket di gudang Pasar Lama', pos: { x: -100, z: 100 }, radius: 6, type: 'reach' },
-        { text: 'Antar paket ke Warung Bu Sari di Menara', pos: { x: 100, z: -100 }, radius: 6, type: 'deliver' },
-        { text: 'Antar paket ke Toko Kelontong di Pesisir', pos: { x: 200, z: 200 }, radius: 6, type: 'deliver' },
-        { text: 'Antar paket terakhir ke Kios Pelabuhan', pos: { x: -200, z: -200 }, radius: 6, type: 'deliver' },
-      ],
-    },
-    {
-      id: 1,
-      title: 'Mobil Pinjaman',
-      reward: REWARDS[1],
-      wanted: 0,
-      briefing:
-        'Tujuan: "pinjam" mobil sport oranye yang terparkir di Menara, lalu ' +
-        'bawa ke Bengkel Jaya di Pasar Lama untuk diganti pelatnya. Tekan E ' +
-        'di dekat mobil target untuk masuk. Hadiah: $1200.',
-      dialog: [
-        { who: 'Mira', line: 'Bos Darma minta tolong. Ada mobil oranye terparkir di Menara.' },
-        { who: 'Raka', line: 'Pinjam? Atau... pinjam selamanya?' },
-        { who: 'Mira', line: 'Tekan E di dekat mobil untuk masuk. Jangan bikin ribut.' },
-        { who: 'Raka', line: 'Bengkel Jaya, Pasar Lama. Mengerti.' },
-      ],
-      objectives: [
-        { text: 'Ambil mobil target di parkiran Menara (tekan E di dekat mobil)', pos: { x: 200, z: -100 }, radius: 5, type: 'steal' },
-        { text: 'Bawa mobil ke Bengkel Jaya di Pasar Lama', pos: { x: -100, z: 200 }, radius: 7, type: 'deliver', requiresCar: true },
-      ],
-    },
-    {
-      id: 2,
-      title: 'Kejar Bayangan',
-      reward: REWARDS[2],
-      wanted: 2,
-      briefing:
-        'Tujuan: hilangkan wanted 2 bintang. Kamera pengawas merekam aksi ' +
-        'Raka di Menara, jadi polisi Kota Mentari kini memburunya. Kabur, ' +
-        'sembunyi di tempat persembunyian Bukit, dan tunggu sampai mereka ' +
-        'kehilangan jejak (wanted kembali 0). Hadiah: $2000.',
-      dialog: [
-        { who: 'Mira', line: 'Raka, wajahmu terekam kamera! Polisi sudah menyebar.' },
-        { who: 'Raka', line: 'Dua bintang? Baru pemanasan.' },
-        { who: 'Mira', line: 'Jangan sok jago. Menghilang dulu sampai bintangnya padam.' },
-      ],
-      objectives: [
-        { text: 'Kabur dari polisi! Hilangkan wanted sampai 0 bintang', pos: { x: hideout.x, z: hideout.z }, radius: 10, type: 'escape' },
-      ],
-    },
-    {
-      id: 3,
-      title: 'Tolong Mira',
-      reward: REWARDS[3],
-      wanted: 0,
-      briefing:
-        'Tujuan: selamatkan Mira yang dicegat tiga anggota Geng Ombak di gang ' +
-        'Pasar Lama. Temui Mira di gang itu, lalu kalahkan ketiga anggota ' +
-        'geng tersebut. Hadiah: $3000.',
-      dialog: [
-        { who: 'Mira', line: 'Raka! Mereka mengepungku di gang Pasar Lama!' },
-        { who: 'Raka', line: 'Tahan di sana, Mira. Aku datang.' },
-        { who: 'Geng Ombak', line: 'Kurir kecil mau jadi pahlawan? Sini, kalau berani.' },
-        { who: 'Raka', line: 'Kalian salah pilih orang untuk ditagih.' },
-      ],
-      // Posisi anggota Geng Ombak yang muncul saat objektif "defeat" aktif.
-      enemies: [
-        { x: -6, z: -206, jacket: 'purple' },
-        { x: 6, z: -194, jacket: 'red' },
-        { x: 0, z: -212, jacket: 'purple' },
-      ],
-      objectives: [
-        { text: 'Temui Mira di gang Pasar Lama', pos: { x: 0, z: -200 }, radius: 6, type: 'reach' },
-        { text: 'Kalahkan 3 anggota Geng Ombak!', pos: { x: 0, z: -200 }, radius: 14, type: 'defeat' },
-      ],
-    },
-    {
-      id: 4,
-      title: 'Brankas Pelabuhan',
-      reward: REWARDS[4],
-      wanted: 4,
-      briefing:
-        'Tujuan: ambil tas berisi uang setoran Bos Darma di gudang pelabuhan ' +
-        '(470, 350), lalu kabur ke tempat persembunyian di Bukit sebelum ' +
-        'polisi menutup seluruh jalan keluar pelabuhan. Wanted 4 bintang ' +
-        'aktif sejak misi dimulai. Hadiah: $8000.',
-      dialog: [
-        { who: 'Mira', line: 'Tasnya ada di gudang pelabuhan. Begitu kau ambil, alarm pasti bunyi.' },
-        { who: 'Raka', line: 'Empat bintang. Aku pernah lolos dari yang lebih buruk.' },
-        { who: 'Mira', line: 'Jangan lewat jalan besar. Tempat persembunyian di Bukit sudah siap.' },
-      ],
-      objectives: [
-        { text: 'Ambil tas di gudang pelabuhan', pos: { x: harbor.x, z: harbor.z }, radius: 12, type: 'reach' },
-        { text: 'Kabur ke tempat persembunyian di Bukit', pos: { x: hideout.x, z: hideout.z }, radius: 8, type: 'deliver' },
-      ],
-    },
-    {
-      id: 5,
-      title: 'Jalan Pulang',
-      reward: REWARDS[5],
-      wanted: 5,
-      briefing:
-        'Tujuan: hilangkan wanted 5 bintang, lalu capai kapal terakhir di ' +
-        'pelabuhan (470, 350) yang berlayar saat matahari terbenam. Seluruh ' +
-        'Kota Mentari kini memburu Raka — kapal itu satu-satunya jalan ' +
-        'keluar. Hadiah: $15000.',
-      dialog: [
-        { who: 'Mira', line: 'Ini terakhir kalinya, Raka. Kapal berlayar saat senja.' },
-        { who: 'Raka', line: 'Lima bintang... dan satu kapal. Cukup adil.' },
-        { who: 'Mira', line: 'Kalau kau berhasil... sampai jumpa di seberang, kurir.' },
-        { who: 'Raka', line: 'Terima kasih, Kota Mentari. Sekarang aku pulang.' },
-      ],
-      objectives: [
-        { text: 'Hilangkan wanted 5 bintang — bersembunyi sampai polisi pergi', pos: { x: hideout.x, z: hideout.z }, radius: 10, type: 'escape' },
-        { text: 'Capai kapal di pelabuhan — tamat!', pos: { x: ship.x, z: ship.z }, radius: 12, type: 'reach' },
-      ],
-    },
-  ];
+// Misi 3: jarak kejar di bawah 10 satuan, dipertahankan selama 3 detik.
+export const CHASE_DISTANCE = 10;
+export const CHASE_HOLD_SECONDS = 3;
+
+// Misi 5: berdiri di penanda selama 5 detik tanpa tertangkap.
+export const SAFE_HOLD_SECONDS = 5;
+
+// Jumlah paket misi 1 dan jumlah penyerang misi 4.
+export const PACKAGE_COUNT = 3;
+export const ATTACKER_COUNT = 3;
+
+// Total hadiah seluruh misi: 500+1200+2000+3000+8000+15000 = 29700.
+export const TOTAL_REWARD = 29700;
+
+// ---------------------------------------------------------------------------
+// Daftar 6 misi (urutan, nama, briefing, target, hadiah — PERSIS desain)
+// ---------------------------------------------------------------------------
+
+export const MISSIONS = [
+  {
+    id: 1,
+    name: 'Paket Kilat',
+    briefing:
+      'Raka harus mengantar 3 paket kilat untuk Bos Darma sebelum matahari terbenam.',
+    reward: 500,
+    // Tiga penanda kuning: dua di Pasar Lama / Pusat kota, terakhir di Menara.
+    markers: [
+      { x: -200, z: 0 },
+      { x: 0, z: 100 },
+      { x: 100, z: -300 },
+    ],
+  },
+  {
+    id: 2,
+    name: 'Mobil Pinjaman',
+    briefing:
+      'Sebuah mobil oranye terparkir di Pusat kota. Pinjam sebentar — bawa ke Pesisir.',
+    reward: 1200,
+    // Mobil oranye terparkir di Pusat kota; penanda tujuan di Pesisir.
+    parkedCar: { x: 100, z: 0 },
+    dropMarker: { x: 0, z: 400 },
+  },
+  {
+    id: 3,
+    name: 'Kejar Bayangan',
+    briefing:
+      'Mobil target melarikan diri di jalan kota. Kejar sampai jarak di bawah 10 selama 3 detik.',
+    reward: 2000,
+  },
+  {
+    id: 4,
+    name: 'Tolong Mira',
+    briefing:
+      'Temui Mira di Pasar Lama, lalu lindungi dia dari 3 penyerang Geng Ombak.',
+    reward: 3000,
+    // Mira menunggu di Pasar Lama.
+    mira: { x: -200, z: 100 },
+  },
+  {
+    id: 5,
+    name: 'Brankas Pelabuhan',
+    briefing:
+      'Brankas berisi uang ada di Pelabuhan. Berdiri di penanda 5 detik tanpa tertangkap, lalu ambil isinya.',
+    reward: 8000,
+    // Penanda brankas di Pelabuhan.
+    safe: { x: 400, z: 300 },
+  },
+  {
+    id: 6,
+    name: 'Jalan Pulang',
+    briefing:
+      'Kabur dari polisi dan naik kapal di dermaga. Ini jalan pulang Raka.',
+    reward: 15000,
+    // Kapal di dermaga (X 470, Z 350).
+    ship: { x: 470, z: 350 },
+  },
+];
+
+// Hadiah per misi, berurutan — sama dengan daftar di atas.
+export const MISSION_REWARDS = [500, 1200, 2000, 3000, 8000, 15000];
+
+// ---------------------------------------------------------------------------
+// Keadaan misi
+// ---------------------------------------------------------------------------
+
+export function createMissionState() {
+  return {
+    // Nomor misi saat ini, 0 sampai 5. Nilai 6 berarti semua misi selesai.
+    current: 0,
+    // Benar bila keenam misi sudah selesai.
+    finished: false,
+    // Misi mana saja yang sudah selesai (per indeks 0-5).
+    completed: [false, false, false, false, false, false],
+    // Misi 1: jumlah paket yang sudah terantar (0-3) dan indeks penanda aktif.
+    delivered: 0,
+    markerIndex: 0,
+    // Misi 2: benar bila mobil oranye target sudah dicuri.
+    stolenCar: false,
+    // Misi 3: berapa detik pemain sudah bertahan dekat dengan target.
+    chaseTime: 0,
+    // Misi 4: benar bila pemain sudah menemui Mira; jumlah penyerang kalah.
+    metMira: false,
+    attackersDefeated: 0,
+    // Misi 5: berapa detik pemain sudah berdiri di penanda brankas.
+    safeTime: 0,
+    safeOpened: false,
+    // Misi 6: posisi kapal yang dipakai (dari getShipPosition bila ada,
+    // kalau tidak dari daftar misi). Diisi saat misi 6 dimulai.
+    shipPos: null,
+  };
+}
+
+// Misi yang sedang berjalan, atau null bila semua sudah selesai.
+export function getCurrentMission(state) {
+  if (!state || state.current >= MISSIONS.length) return null;
+  return MISSIONS[state.current];
+}
+
+// Nomor misi saat ini (0-5), atau 6 bila semua selesai.
+export function getCurrentMissionIndex(state) {
+  return state ? state.current : 0;
+}
+
+// Benar bila keenam misi sudah selesai.
+export function isAllMissionsComplete(state) {
+  return !!state && (state.finished || state.current >= MISSIONS.length);
 }
 
 // ---------------------------------------------------------------------------
-// Marker 3D: pilar cahaya kuning + ring di tanah + panah melayang
+// Bantuan kecil
 // ---------------------------------------------------------------------------
 
-function createMarker() {
-  const group = new THREE.Group();
-  group.visible = false;
+function distance2D(ax, az, bx, bz) {
+  const dx = ax - bx;
+  const dz = az - bz;
+  return Math.sqrt(dx * dx + dz * dz);
+}
 
-  const beamMat = new THREE.MeshBasicMaterial({
-    color: 0xffd23f, transparent: true, opacity: 0.28,
-    side: THREE.DoubleSide, depthWrite: false,
-  });
-  const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.6, 1.6, 30, 16, 1, true), beamMat,
-  );
-  beam.position.y = 15;
-  group.add(beam);
+function isNear(player, target, radius) {
+  if (!player || !target) return false;
+  return distance2D(player.x, player.z, target.x, target.z) <= radius;
+}
 
-  const ringMat = new THREE.MeshBasicMaterial({
-    color: 0xffd23f, transparent: true, opacity: 0.85,
-    side: THREE.DoubleSide, depthWrite: false,
-  });
-  const ring = new THREE.Mesh(new THREE.RingGeometry(2.2, 3.0, 32), ringMat);
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.12;
-  group.add(ring);
+function toast(game, text) {
+  if (game && typeof game.showToast === 'function') game.showToast(text);
+}
 
-  const arrowMat = new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.95 });
-  const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.9, 2.2, 12), arrowMat);
-  arrow.rotation.x = Math.PI; // ujung mengarah ke bawah
-  arrow.position.y = 8;
-  group.add(arrow);
+function playFanfare(game) {
+  if (game && game.audio && typeof game.audio.playFanfare === 'function') {
+    game.audio.playFanfare();
+  } else if (game && typeof game.playFanfare === 'function') {
+    game.playFanfare();
+  }
+}
 
-  group.userData = { beam, ring, arrow, beamMat, ringMat, arrowMat };
-  return group;
+function playPickup(game) {
+  if (game && game.audio && typeof game.audio.playPickup === 'function') {
+    game.audio.playPickup();
+  } else if (game && typeof game.playPickup === 'function') {
+    game.playPickup();
+  }
+}
+
+// Ambil posisi kapal lewat getShipPosition (world). Dipanggil dengan
+// game.world bila ada (bila tidak, tanpa argumen — argumen ekstra
+// diabaikan bila fungsinya tidak memakainya). Bila gagal, kembalikan
+// posisi kapal dari dokumen desain (X 470, Z 350).
+function resolveShipPosition(game) {
+  try {
+    const world = game && game.world;
+    const pos = world ? getShipPosition(world) : getShipPosition();
+    if (pos && typeof pos.x === 'number' && typeof pos.z === 'number') {
+      return { x: pos.x, z: pos.z };
+    }
+    if (Array.isArray(pos) && pos.length >= 2) {
+      return { x: pos[0], z: pos[1] };
+    }
+  } catch (e) {
+    // Jatuh ke cadangan di bawah.
+  }
+  return { x: SHIP_POSITION.x, z: SHIP_POSITION.z };
 }
 
 // ---------------------------------------------------------------------------
-// Factory
+// Pemulai misi
 // ---------------------------------------------------------------------------
 
-export function createMissions(world, scene, hooks) {
-  const h = hooks || {};
-  const spawn = (world && world.spawn) || {};
-  const list = buildMissions(spawn);
+// Mulai misi nomor index (0-5). Mengatur ulang kemajuan khusus misi itu,
+// menampilkan briefing lewat toast, dan untuk misi 6 menaikkan wanted ke 3.
+export function startMission(state, index, game) {
+  if (!state) return null;
+  if (index < 0 || index >= MISSIONS.length) return null;
 
-  // Induk marker: scene bila diberikan, kalau tidak world.group (kontrak Lane A).
-  const parent = scene || (world && world.group) || null;
-  const marker = createMarker();
-  if (parent) parent.add(marker);
+  state.current = index;
+  state.finished = false;
 
-  const state = {
-    active: -1, // index misi yang sedang berjalan, -1 = belum mulai
-    objectiveIndex: 0,
-    completed: [], // index misi yang sudah selesai
-    defeatArmed: false, // true setelah musuh objektif "defeat" di-spawn
-    escapeArmed: false, // true setelah wanted misi "escape" aktif
-    time: 0,
-  };
+  // Atur ulang kemajuan khusus tiap misi.
+  state.delivered = 0;
+  state.markerIndex = 0;
+  state.stolenCar = false;
+  state.chaseTime = 0;
+  state.metMira = false;
+  state.attackersDefeated = 0;
+  state.safeTime = 0;
+  state.safeOpened = false;
 
-  const api = {
-    list,
-    marker,
-    onComplete: () => {},
-    onFail: () => {},
-    get active() { return state.active; },
-    get objectiveIndex() { return state.objectiveIndex; },
-    get completed() { return state.completed.slice(); },
-    get finished() { return state.completed.length >= list.length; },
-  };
+  const mission = MISSIONS[index];
 
-  function currentMission() {
-    return state.active >= 0 && state.active < list.length ? list[state.active] : null;
+  // Misi 3: minta modul utama memunculkan mobil target yang melarikan diri.
+  if (index === 2 && game && typeof game.spawnChaseTarget === 'function') {
+    game.spawnChaseTarget();
   }
 
-  function currentObjectiveDef() {
-    const m = currentMission();
-    if (!m) return null;
-    return m.objectives[state.objectiveIndex] || null;
-  }
-
-  // Misi berikutnya yang belum selesai (dipakai saat tidak ada misi aktif:
-  // layar "complete" di antara dua misi, sebelum misi pertama dimulai).
-  function nextMission() {
-    for (let i = 0; i < list.length; i += 1) {
-      if (!state.completed.includes(i)) return list[i];
+  // Misi 6: ambil posisi kapal dari dunia (getShipPosition) dan wanted
+  // langsung naik ke 3 — polisi mengejar, roadblock muncul.
+  if (index === 5) {
+    state.shipPos = resolveShipPosition(game);
+    if (game && typeof game.setWanted === 'function') {
+      game.setWanted(3);
     }
+  }
+
+  toast(game, 'Misi: ' + mission.name + ' — ' + mission.briefing);
+  if (game && typeof game.onMissionStart === 'function') {
+    game.onMissionStart(mission);
+  }
+  return mission;
+}
+
+// Mulai ulang misi yang sedang berjalan (dipakai saat coba lagi dari BUSTED):
+// kemajuan misi itu diatur ulang, nomor misi dan uang tetap.
+export function resetCurrentMission(state, game) {
+  if (!state) return null;
+  if (state.current >= MISSIONS.length) return null;
+  return startMission(state, state.current, game);
+}
+
+// ---------------------------------------------------------------------------
+// Pemeriksa kemajuan — dipanggil modul utama tiap frame
+// ---------------------------------------------------------------------------
+
+export function updateMissions(state, dt, game) {
+  if (!state || state.finished) return;
+  if (state.current >= MISSIONS.length) return;
+  if (!game || !game.player) return;
+  if (!dt || dt <= 0) return;
+
+  if (state.current === 0) updateMission1(state, game);
+  else if (state.current === 1) updateMission2(state, game);
+  else if (state.current === 2) updateMission3(state, dt, game);
+  else if (state.current === 3) updateMission4(state, game);
+  else if (state.current === 4) updateMission5(state, dt, game);
+  else if (state.current === 5) updateMission6(state, game);
+}
+
+// Misi 1 "Paket Kilat": antar 3 paket. Sentuh tiap penanda kuning untuk
+// mengantar satu paket; penanda terakhir ada di Menara.
+function updateMission1(state, game) {
+  const mission = MISSIONS[0];
+  const marker = mission.markers[state.markerIndex];
+  if (!marker) return;
+  if (isNear(game.player, marker, MARKER_RADIUS)) {
+    state.delivered += 1;
+    state.markerIndex += 1;
+    playPickup(game);
+    if (state.delivered >= PACKAGE_COUNT) {
+      completeMission(state, game);
+    } else {
+      toast(game, 'Paket ' + state.delivered + ' dari 3 terantar');
+    }
+  }
+}
+
+// Misi 2 "Mobil Pinjaman": curi mobil oranye, bawa ke penanda di Pesisir.
+function updateMission2(state, game) {
+  const mission = MISSIONS[1];
+  const player = game.player;
+
+  // Bila pemain sudah duduk di mobil target (diberi tahu lewat onCarStolen
+  // atau lewat penanda di keadaan pemain), fase berubah jadi antar ke Pesisir.
+  if (!state.stolenCar && (player.stolenTargetCar || player.inTargetCar)) {
+    state.stolenCar = true;
+    toast(game, 'Bawa mobil oranye ke Pesisir');
+  }
+
+  if (state.stolenCar && player.inCar) {
+    if (isNear(player, mission.dropMarker, MARKER_RADIUS)) {
+      completeMission(state, game);
+    }
+  }
+}
+
+// Misi 3 "Kejar Bayangan": dekati mobil target sampai jarak di bawah 10
+// selama 3 detik berturut-turut. Bila menjauh, hitungan mengulang dari nol.
+function updateMission3(state, dt, game) {
+  const target =
+    game.chaseTarget ||
+    (typeof game.getChaseTarget === 'function' ? game.getChaseTarget() : null);
+  if (!target) return;
+
+  const dist = distance2D(game.player.x, game.player.z, target.x, target.z);
+  if (dist < CHASE_DISTANCE) {
+    state.chaseTime += dt;
+    if (state.chaseTime >= CHASE_HOLD_SECONDS) {
+      completeMission(state, game);
+    }
+  } else {
+    state.chaseTime = 0;
+  }
+}
+
+// Misi 4 "Tolong Mira": temui Mira di Pasar Lama, lalu kalahkan 3 penyerang
+// Geng Ombak yang mendekat.
+function updateMission4(state, game) {
+  const mission = MISSIONS[3];
+
+  if (!state.metMira) {
+    if (isNear(game.player, mission.mira, MARKER_RADIUS)) {
+      state.metMira = true;
+      toast(game, 'Lindungi Mira dari Geng Ombak!');
+      if (game && typeof game.spawnAttackers === 'function') {
+        game.spawnAttackers(ATTACKER_COUNT, mission.mira.x, mission.mira.z);
+      }
+    }
+    return;
+  }
+
+  if (state.attackersDefeated >= ATTACKER_COUNT) {
+    completeMission(state, game);
+  }
+}
+
+// Misi 5 "Brankas Pelabuhan": berdiri di penanda selama 5 detik tanpa
+// tertangkap, lalu ambil isi brankas. Bila pergi dari penanda, hitungan
+// mengulang dari nol.
+function updateMission5(state, dt, game) {
+  const mission = MISSIONS[4];
+  if (isNear(game.player, mission.safe, MARKER_RADIUS)) {
+    state.safeTime += dt;
+    if (state.safeTime >= SAFE_HOLD_SECONDS) {
+      state.safeOpened = true;
+      playPickup(game);
+      completeMission(state, game);
+    }
+  } else {
+    state.safeTime = 0;
+  }
+}
+
+// Misi 6 "Jalan Pulang": kabur ke kapal di dermaga (posisi dari
+// getShipPosition; cadangan X 470, Z 350). Naik kapal berarti TAMAT.
+function updateMission6(state, game) {
+  const ship = state.shipPos || MISSIONS[5].ship;
+  if (isNear(game.player, ship, SHIP_RADIUS)) {
+    completeMission(state, game);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Penyelesai misi
+// ---------------------------------------------------------------------------
+
+// Selesaikan misi yang sedang berjalan: beri hadiah, simpan lewat modul
+// utama, lanjut ke misi berikut (atau tandai semua selesai bila ini misi 6).
+export function completeMission(state, game) {
+  if (!state) return 0;
+  if (state.current >= MISSIONS.length) return 0;
+
+  const mission = MISSIONS[state.current];
+  const reward = mission.reward;
+
+  // Beri hadiah.
+  if (game && typeof game.addMoney === 'function') {
+    game.addMoney(reward);
+  } else if (game && game.player) {
+    game.player.money = (game.player.money || 0) + reward;
+  }
+
+  state.completed[state.current] = true;
+
+  // Simpan nomor misi berikut + uang lewat modul utama.
+  if (game && typeof game.saveGame === 'function') game.saveGame();
+
+  playFanfare(game);
+  toast(game, 'Misi selesai: ' + mission.name + ' (+$' + reward + ')');
+
+  state.current += 1;
+
+  if (state.current >= MISSIONS.length) {
+    // Misi 6 selesai: naik kapal berarti TAMAT.
+    state.finished = true;
+    if (game && typeof game.onAllMissionsComplete === 'function') {
+      game.onAllMissionsComplete();
+    }
+  } else {
+    startMission(state, state.current, game);
+  }
+
+  return reward;
+}
+
+// ---------------------------------------------------------------------------
+// Kejadian dari modul player / combat
+// ---------------------------------------------------------------------------
+
+// Dipanggil modul player saat pemain mencuri sebuah mobil. Bila misi 2
+// sedang berjalan, fase berubah jadi antar mobil ke Pesisir.
+export function onCarStolen(state, game, car) {
+  if (!state || state.current !== 1) return;
+  state.stolenCar = true;
+  toast(game, 'Bawa mobil oranye ke Pesisir');
+}
+
+// Dipanggil modul combat saat seorang musuh kalah. Bila misi 4 sedang
+// berjalan dan Mira sudah ditemui, hitung satu penyerang kalah.
+export function onEnemyDefeated(state, game, enemy) {
+  if (!state || state.current !== 3) return;
+  if (!state.metMira) return;
+  state.attackersDefeated += 1;
+  if (state.attackersDefeated >= ATTACKER_COUNT) {
+    completeMission(state, game);
+  }
+}
+
+// Dipanggil modul player saat satu paket terantar lewat interaksi lain
+// (bila penanda tidak dipakai). Biasanya updateMission1 sudah menangani ini.
+export function onPackageDelivered(state, game) {
+  if (!state || state.current !== 0) return;
+  state.delivered += 1;
+  state.markerIndex += 1;
+  playPickup(game);
+  if (state.delivered >= PACKAGE_COUNT) {
+    completeMission(state, game);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Teks objective — SELALU aktual, dibaca HUD tiap frame
+// ---------------------------------------------------------------------------
+
+export function getObjectiveText(state) {
+  if (!state) return 'Pergi ke penanda kuning';
+  if (state.finished || state.current >= MISSIONS.length) {
+    return 'Semua misi selesai!';
+  }
+
+  if (state.current === 0) {
+    if (state.delivered <= 0) return 'Pergi ke penanda kuning';
+    return 'Paket ' + state.delivered + ' dari 3 terantar';
+  }
+
+  if (state.current === 1) {
+    if (!state.stolenCar) return 'Curi mobil oranye di Pusat kota';
+    return 'Bawa mobil oranye ke Pesisir';
+  }
+
+  if (state.current === 2) {
+    if (state.chaseTime > 0) return 'Tetap di dekat target!';
+    return 'Kejar mobil target';
+  }
+
+  if (state.current === 3) {
+    if (!state.metMira) return 'Temui Mira di Pasar Lama';
+    return (
+      'Kalahkan penyerang Geng Ombak (' +
+      state.attackersDefeated +
+      ' dari 3)'
+    );
+  }
+
+  if (state.current === 4) {
+    if (state.safeTime > 0) return 'Tetap di penanda untuk membuka brankas';
+    return 'Pergi ke brankas di Pelabuhan';
+  }
+
+  if (state.current === 5) {
+    return 'Kabur dari polisi!';
+  }
+
+  return 'Semua misi selesai!';
+}
+
+// ---------------------------------------------------------------------------
+// Penanda aktif — untuk penanda kuning di dunia + berlian kuning di minimap
+// ---------------------------------------------------------------------------
+
+// Posisi target misi saat ini (satu titik), atau null bila tidak ada target
+// tetap (misalnya misi 4 setelah Mira ditemui: targetnya para penyerang).
+export function getActiveMarker(state, game) {
+  if (!state) return null;
+  if (state.finished || state.current >= MISSIONS.length) return null;
+
+  if (state.current === 0) {
+    const mission = MISSIONS[0];
+    return mission.markers[state.markerIndex] || null;
+  }
+  if (state.current === 1) {
+    const mission = MISSIONS[1];
+    return state.stolenCar ? mission.dropMarker : mission.parkedCar;
+  }
+  if (state.current === 2) {
+    const target =
+      game &&
+      (game.chaseTarget ||
+        (typeof game.getChaseTarget === 'function'
+          ? game.getChaseTarget()
+          : null));
+    return target ? { x: target.x, z: target.z } : null;
+  }
+  if (state.current === 3) {
+    if (!state.metMira) return MISSIONS[3].mira;
     return null;
   }
-
-  function placeMarker(obj) {
-    if (!obj) { marker.visible = false; return; }
-    marker.visible = true;
-    marker.position.set(obj.pos.x, 0, obj.pos.z);
+  if (state.current === 4) {
+    return MISSIONS[4].safe;
   }
-
-  function announce(text) {
-    if (typeof h.onMessage === 'function') h.onMessage(text);
+  if (state.current === 5) {
+    return state.shipPos || MISSIONS[5].ship;
   }
+  return null;
+}
 
-  function applyMissionStartEffects(mission) {
-    if (mission.wanted > 0 && typeof h.onSetWanted === 'function') {
-      h.onSetWanted(mission.wanted);
-      state.escapeArmed = true;
-    }
-  }
-
-  api.start = function start(index) {
-    if (index < 0 || index >= list.length) return false;
-    const mission = list[index];
-    state.active = index;
-    state.objectiveIndex = 0;
-    state.defeatArmed = false;
-    state.escapeArmed = false;
-    applyMissionStartEffects(mission);
-    const obj = currentObjectiveDef();
-    placeMarker(obj);
-    announce(mission.title + ' — ' + mission.briefing);
-    return true;
-  };
-
-  // Dipanggil main.js saat pemain tertangkap / mati: misi gagal, marker hilang.
-  api.fail = function fail(reason) {
-    marker.visible = false;
-    const index = state.active;
-    state.active = -1;
-    state.objectiveIndex = 0;
-    state.defeatArmed = false;
-    state.escapeArmed = false;
-    if (typeof api.onFail === 'function') api.onFail(reason || 'Misi gagal', index);
-  };
-
-  // v3: teks objective SELALU mencerminkan progres saat ini — tidak pernah
-  // null saat ada yang bisa ditampilkan, tidak pernah basi:
-  // - misi aktif -> objektif aktif misi itu;
-  // - semua misi selesai -> "Semua misi selesai!";
-  // - tidak ada misi aktif tapi masih ada misi tersisa (layar complete di
-  //   antara misi, atau sebelum misi pertama) -> objektif pertama misi
-  //   berikutnya, supaya HUD tidak menampilkan teks misi yang baru selesai.
-  api.currentObjective = function currentObjective() {
-    if (api.finished) return { text: 'Semua misi selesai!', pos: null };
-    const obj = currentObjectiveDef();
-    if (obj) return { text: obj.text, pos: { x: obj.pos.x, z: obj.pos.z } };
-    const mission = currentMission();
-    if (mission) return { text: mission.title, pos: null };
-    const next = nextMission();
-    if (next && next.objectives.length > 0) {
-      const first = next.objectives[0];
-      return { text: first.text, pos: { x: first.pos.x, z: first.pos.z } };
-    }
-    return { text: 'Semua misi selesai!', pos: null };
-  };
-
-  api.currentMission = function currentMissionInfo() {
-    const m = currentMission();
-    if (!m) return null;
-    return {
-      index: state.active, title: m.title, briefing: m.briefing,
-      dialog: m.dialog, reward: m.reward, objectiveIndex: state.objectiveIndex,
-      objectiveCount: m.objectives.length,
-    };
-  };
-
-  function advanceObjective() {
-    const mission = currentMission();
-    if (!mission) return 'none';
-    state.objectiveIndex += 1;
-    state.defeatArmed = false;
-    if (state.objectiveIndex >= mission.objectives.length) {
-      // Misi selesai.
-      const index = state.active;
-      const reward = mission.reward;
-      state.completed.push(index);
-      state.active = -1;
-      state.objectiveIndex = 0;
-      marker.visible = false;
-      announce('Misi selesai: ' + mission.title + ' (+$' + reward + ')');
-      if (typeof api.onComplete === 'function') api.onComplete(index, reward);
-      return 'complete';
-    }
-    const obj = currentObjectiveDef();
-    placeMarker(obj);
-    announce(obj.text);
-    // Objektif "defeat": minta main.js memunculkan musuh dari combat.
-    if (obj.type === 'defeat' && typeof h.onSpawnEnemies === 'function') {
-      h.onSpawnEnemies((mission.enemies || []).map((e) => ({ ...e })));
-      state.defeatArmed = true;
-    }
-    return 'objective';
-  }
-
-  function dist2D(a, b) {
-    const dx = a.x - b.x;
-    const dz = a.z - b.z;
-    return Math.sqrt(dx * dx + dz * dz);
-  }
-
-  api.update = function update(dt, ctx) {
-    state.time += dt;
-    // Animasi marker: denyut ring + panah melayang naik-turun.
-    if (marker.visible) {
-      const pulse = 1 + Math.sin(state.time * 3) * 0.12;
-      marker.userData.ring.scale.set(pulse, pulse, 1);
-      marker.userData.ringMat.opacity = 0.6 + Math.sin(state.time * 3) * 0.25;
-      marker.userData.arrow.position.y = 8 + Math.sin(state.time * 2.2) * 0.8;
-      marker.userData.arrow.rotation.y = state.time * 1.5;
-    }
-
-    const mission = currentMission();
-    const obj = currentObjectiveDef();
-    if (!mission || !obj || !ctx || !ctx.playerPos) return null;
-
-    const d = dist2D(ctx.playerPos, obj.pos);
-    const wanted = typeof ctx.wanted === 'number' ? ctx.wanted : 0;
-
-    switch (obj.type) {
-      case 'reach':
-        if (d <= obj.radius) return advanceObjective();
-        break;
-      case 'deliver':
-        // Antar: harus sampai di titik; bila butuh mobil, harus di dalam mobil.
-        if (d <= obj.radius && (!obj.requiresCar || ctx.playerInCar)) return advanceObjective();
-        break;
-      case 'steal':
-        // Curi: sampai di titik DAN sudah masuk ke mobil target (oranye).
-        // ctx.targetCar = mobil target misi 2 (di-spawn main.js); bila
-        // tidak ada (mis. save lama), fallback ke mobil apa pun.
-        if (d <= obj.radius && ctx.playerInCar
-          && (!ctx.targetCar || ctx.playerCar === ctx.targetCar)) return advanceObjective();
-        break;
-      case 'escape':
-        // Kabur: selesai saat wanted benar-benar 0 (polisi kehilangan jejak).
-        // escapeArmed mencegah misi langsung selesai bila wanted belum sempat naik.
-        if (state.escapeArmed && wanted <= 0) return advanceObjective();
-        if (!state.escapeArmed && wanted > 0) state.escapeArmed = true;
-        break;
-      case 'defeat':
-        // Kalahkan: selesai saat semua musuh yang di-spawn sudah mati.
-        if (state.defeatArmed && typeof ctx.enemiesAlive === 'number' && ctx.enemiesAlive <= 0) {
-          return advanceObjective();
-        }
-        break;
-      default:
-        if (d <= obj.radius) return advanceObjective();
-        break;
-    }
-    return null;
-  };
-
-  // Simpan / muat progresi (dipakai main.js bersama localStorage).
-  api.save = function save() {
-    return {
-      active: state.active,
-      objectiveIndex: state.objectiveIndex,
-      completed: state.completed.slice(),
-    };
-  };
-
-  api.load = function load(data) {
-    if (!data) return false;
-    state.completed = Array.isArray(data.completed) ? data.completed.slice() : [];
-    if (typeof data.active === 'number' && data.active >= 0 && data.active < list.length) {
-      api.start(data.active);
-      state.objectiveIndex = Math.min(
-        data.objectiveIndex || 0,
-        list[data.active].objectives.length - 1,
-      );
-      placeMarker(currentObjectiveDef());
-    }
-    return true;
-  };
-
-  return api;
+// Semua posisi penanda misi 1 (untuk menggambar ketiganya sekaligus bila perlu).
+export function getMission1Markers() {
+  return MISSIONS[0].markers.map(function (m) {
+    return { x: m.x, z: m.z };
+  });
 }

@@ -1,177 +1,329 @@
-// Semua suara sintetis WebAudio (oscillator + noise), tanpa file audio.
-// AudioContext dibuat / di-resume pada interaksi pertama pengguna.
-export function createAudio() {
-  let ctx = null;
-  let master = null;
-  let engineOsc = null;
-  let engineGain = null;
-  let engineFilter = null;
-  let sirenOsc = null;
-  let sirenGain = null;
-  let sirenTimer = 0;
-  let sirenHigh = false;
-  let musicTimer = 0;
-  let musicStep = 0;
-  let muted = false;
-  let unlocked = false;
+// KOTA MENTARI — modul audio.
+// Sintesis suara memakai WebAudio, TANPA berkas suara apa pun.
+// Suara TIDAK BOLEH mulai sebelum gestur pertama pengguna: konteks audio
+// hanya dibuat (dan dilanjutkan) di dalam initAudio(), yang dipanggil modul
+// utama dari gestur (klik tombol mulai / tekan tombol). Tombol M membisukan
+// semua suara lewat toggleMute() / setMuted().
 
-  function ensure() {
-    if (!ctx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return false;
-      ctx = new AC();
-      master = ctx.createGain();
-      master.gain.value = muted ? 0 : 0.5;
-      master.connect(ctx.destination);
-      // Mesin: sawtooth + lowpass, gain awal 0.
-      engineOsc = ctx.createOscillator();
-      engineOsc.type = 'sawtooth';
-      engineOsc.frequency.value = 55;
-      engineFilter = ctx.createBiquadFilter();
-      engineFilter.type = 'lowpass';
-      engineFilter.frequency.value = 500;
-      engineGain = ctx.createGain();
-      engineGain.gain.value = 0;
-      engineOsc.connect(engineFilter);
-      engineFilter.connect(engineGain);
-      engineGain.connect(master);
-      engineOsc.start();
-      // Sirene: sine dua nada, gain awal 0.
-      sirenOsc = ctx.createOscillator();
-      sirenOsc.type = 'sine';
-      sirenOsc.frequency.value = 720;
-      sirenGain = ctx.createGain();
-      sirenGain.gain.value = 0;
-      sirenOsc.connect(sirenGain);
-      sirenGain.connect(master);
-      sirenOsc.start();
-    }
-    if (ctx.state === 'suspended') void ctx.resume();
-    unlocked = true;
-    return true;
+let audioCtx = null;
+let masterGain = null;
+let muted = false;
+let engineOsc = null;
+let engineGain = null;
+let engineFilter = null;
+let sirenTimer = null;
+let sirenHigh = false;
+let ambientNodes = null;
+
+// ---------------------------------------------------------------------------
+// Penginisialisasi suara pada gestur pertama pengguna.
+// Aman dipanggil berulang: panggilan kedua dan seterusnya tidak membuat
+// konteks baru, hanya melanjutkan konteks yang tertunda.
+// Mengembalikan true bila konteks audio berhasil disiapkan.
+// ---------------------------------------------------------------------------
+export function initAudio() {
+  if (typeof window === 'undefined') return false;
+  if (!audioCtx) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return false;
+    audioCtx = new AudioContextClass();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = muted ? 0 : 0.6;
+    masterGain.connect(audioCtx.destination);
   }
-
-  // Buka kunci audio pada interaksi pertama (gesture pengguna).
-  window.addEventListener('pointerdown', ensure, { once: false });
-  window.addEventListener('keydown', ensure, { once: false });
-
-  function noiseBuffer(duration) {
-    const len = Math.max(1, Math.floor(ctx.sampleRate * duration));
-    const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < len; i += 1) data[i] = Math.random() * 2 - 1;
-    return buffer;
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
   }
-
-  function blip(freq, duration, type, volume, when = 0) {
-    if (!ctx || !unlocked) return;
-    const t = ctx.currentTime + when;
-    const osc = ctx.createOscillator();
-    osc.type = type || 'sine';
-    osc.frequency.value = freq;
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(volume || 0.2, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
-    osc.connect(gain);
-    gain.connect(master);
-    osc.start(t);
-    osc.stop(t + duration + 0.02);
-  }
-
-  function noiseBurst(duration, volume, filterFreq) {
-    if (!ctx || !unlocked) return;
-    const t = ctx.currentTime;
-    const src = ctx.createBufferSource();
-    src.buffer = noiseBuffer(duration);
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = filterFreq || 1200;
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(volume || 0.3, t);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(master);
-    src.start(t);
-  }
-
-  // speed01: 0..1 — pitch + volume mesin mengikuti kecepatan mobil.
-  function engine(speed01) {
-    if (!ctx || !unlocked) return;
-    const s = Math.max(0, Math.min(1, speed01 || 0));
-    const now = ctx.currentTime;
-    engineOsc.frequency.setTargetAtTime(55 + s * 170, now, 0.08);
-    engineFilter.frequency.setTargetAtTime(400 + s * 900, now, 0.08);
-    engineGain.gain.setTargetAtTime(s <= 0.01 ? 0 : 0.035 + s * 0.05, now, 0.1);
-  }
-
-  function siren(on) {
-    if (!ctx || !unlocked) return;
-    if (on && !sirenTimer) {
-      sirenGain.gain.setTargetAtTime(0.045, ctx.currentTime, 0.05);
-      sirenTimer = window.setInterval(() => {
-        sirenHigh = !sirenHigh;
-        sirenOsc.frequency.value = sirenHigh ? 950 : 700;
-      }, 380);
-    } else if (!on && sirenTimer) {
-      window.clearInterval(sirenTimer);
-      sirenTimer = 0;
-      sirenGain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
-    }
-  }
-
-  function shot() {
-    noiseBurst(0.16, 0.5, 2600);
-    blip(160, 0.08, 'square', 0.12);
-  }
-
-  function punch() {
-    noiseBurst(0.09, 0.35, 500);
-    blip(110, 0.1, 'sine', 0.25);
-  }
-
-  function pickup() {
-    blip(660, 0.09, 'sine', 0.22);
-    blip(990, 0.14, 'sine', 0.22, 0.09);
-  }
-
-  function jingle() {
-    const notes = [523, 659, 784, 1047];
-    notes.forEach((freq, i) => blip(freq, 0.22, 'triangle', 0.22, i * 0.13));
-  }
-
-  function click() {
-    ensure();
-    blip(880, 0.05, 'square', 0.12);
-  }
-
-  function setMuted(value) {
-    muted = !!value;
-    if (master && ctx) master.gain.setTargetAtTime(muted ? 0 : 0.5, ctx.currentTime, 0.05);
-  }
-
-  // Musik: bassline loop sederhana (Am – F – C – G), triangle + ketukan noise pelan.
-  function startMusic() {
-    if (!ensure()) return;
-    if (musicTimer) return;
-    // Pola bass (Hz), 8 langkah per bar, 4 bar.
-    const bass = [
-      55, 0, 55, 0, 65.41, 0, 55, 0,
-      43.65, 0, 43.65, 0, 55, 0, 49, 0,
-      65.41, 0, 65.41, 0, 65.41, 0, 82.41, 0,
-      49, 0, 49, 0, 55, 0, 49, 0,
-    ];
-    musicTimer = window.setInterval(() => {
-      if (!ctx || !unlocked || muted) {
-        musicStep = (musicStep + 1) % bass.length;
-        return;
-      }
-      const freq = bass[musicStep];
-      if (freq > 0) blip(freq, 0.22, 'triangle', 0.16);
-      if (musicStep % 2 === 0) noiseBurst(0.03, 0.05, 6000);
-      musicStep = (musicStep + 1) % bass.length;
-    }, 230);
-  }
-
-  return { engine, siren, shot, punch, pickup, jingle, click, setMuted, startMusic };
+  return true;
 }
+
+// Alias penginisialisasi.
+export const ensureAudio = initAudio;
+export const initSound = initAudio;
+
+// ---------------------------------------------------------------------------
+// Pengatur bisu (tombol M). setMuted(true) mematikan semua suara,
+// setMuted(false) menghidupkan kembali. toggleMute() membalik keadaan.
+// ---------------------------------------------------------------------------
+export function setMuted(value) {
+  muted = Boolean(value);
+  if (masterGain && audioCtx) {
+    masterGain.gain.setTargetAtTime(muted ? 0 : 0.6, audioCtx.currentTime, 0.02);
+  }
+  if (muted) {
+    stopEngine();
+    stopSiren();
+  }
+  return muted;
+}
+
+export function toggleMute() {
+  return setMuted(!muted);
+}
+
+export function isMuted() {
+  return muted;
+}
+
+// ---------------------------------------------------------------------------
+// Pembantu internal: membuat osilator pendek dengan amplop naik-turun.
+// Semua pemutar di bawah memakai pembantu ini, jadi tidak ada suara yang
+// berbunyi bila konteks belum diinisialisasi atau sedang bisu.
+// ---------------------------------------------------------------------------
+function tone(options) {
+  if (!audioCtx || !masterGain || muted) return null;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = options.type || 'sine';
+  osc.frequency.setValueAtTime(options.frequency || 440, now);
+  if (options.slideTo) {
+    osc.frequency.exponentialRampToValueAtTime(
+      Math.max(1, options.slideTo),
+      now + (options.duration || 0.2),
+    );
+  }
+  const volume = options.volume == null ? 0.25 : options.volume;
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(volume, now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(
+    0.0001,
+    now + (options.duration || 0.2),
+  );
+  osc.connect(gain);
+  gain.connect(masterGain);
+  osc.start(now);
+  osc.stop(now + (options.duration || 0.2) + 0.05);
+  return osc;
+}
+
+function noiseBurst(duration, volume, filterFrequency) {
+  if (!audioCtx || !masterGain || muted) return;
+  const now = audioCtx.currentTime;
+  const length = Math.max(1, Math.floor(audioCtx.sampleRate * duration));
+  const buffer = audioCtx.createBuffer(1, length, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < length; i += 1) {
+    data[i] = (Math.random() * 2 - 1) * (1 - i / length);
+  }
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = filterFrequency || 1200;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(volume || 0.3, now);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+  source.start(now);
+}
+
+// ---------------------------------------------------------------------------
+// Suara mesin: dengung kontinyu yang nadanya naik mengikuti kecepatan mobil.
+// speedKmh 0 berarti diam (nada rendah), 108 berarti kecepatan penuh.
+// Memanggil playEngine(0) atau stopEngine() menghentikan dengung.
+// ---------------------------------------------------------------------------
+export function playEngine(speedKmh) {
+  if (!audioCtx || !masterGain || muted) return;
+  const speed = Math.max(0, speedKmh || 0);
+  if (speed <= 0.5) {
+    stopEngine();
+    return;
+  }
+  if (!engineOsc) {
+    engineOsc = audioCtx.createOscillator();
+    engineOsc.type = 'sawtooth';
+    engineFilter = audioCtx.createBiquadFilter();
+    engineFilter.type = 'lowpass';
+    engineFilter.frequency.value = 700;
+    engineGain = audioCtx.createGain();
+    engineGain.gain.value = 0.0;
+    engineOsc.connect(engineFilter);
+    engineFilter.connect(engineGain);
+    engineGain.connect(masterGain);
+    engineOsc.start();
+  }
+  const now = audioCtx.currentTime;
+  const frequency = 55 + speed * 1.6;
+  engineOsc.frequency.setTargetAtTime(frequency, now, 0.08);
+  engineFilter.frequency.setTargetAtTime(500 + speed * 9, now, 0.08);
+  engineGain.gain.setTargetAtTime(0.05 + speed * 0.0006, now, 0.1);
+}
+
+export function stopEngine() {
+  if (engineOsc) {
+    try {
+      engineOsc.stop();
+    } catch (error) {
+      // Osilator sudah berhenti; abaikan.
+    }
+    engineOsc = null;
+    engineGain = null;
+    engineFilter = null;
+  }
+}
+
+// Alias suara mesin.
+export const updateEngineSound = playEngine;
+
+// ---------------------------------------------------------------------------
+// Sirene polisi: dua nada bergantian (tinggi-rendah) selama polisi dekat.
+// playSiren() memulai pergantian; stopSiren() menghentikannya.
+// ---------------------------------------------------------------------------
+export function playSiren() {
+  if (!audioCtx || !masterGain || muted) return;
+  if (sirenTimer !== null) return;
+  sirenHigh = false;
+  sirenTimer = window.setInterval(() => {
+    if (muted || !audioCtx) return;
+    sirenHigh = !sirenHigh;
+    tone({
+      type: 'sine',
+      frequency: sirenHigh ? 880 : 660,
+      duration: 0.38,
+      volume: 0.12,
+    });
+  }, 400);
+}
+
+export function stopSiren() {
+  if (sirenTimer !== null) {
+    window.clearInterval(sirenTimer);
+    sirenTimer = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tembakan: letupan bising pendek.
+// ---------------------------------------------------------------------------
+export function playGunshot() {
+  noiseBurst(0.12, 0.5, 2500);
+  tone({ type: 'square', frequency: 180, slideTo: 60, duration: 0.1, volume: 0.2 });
+}
+
+// Alias tembakan.
+export const playShot = playGunshot;
+export const playShoot = playGunshot;
+
+// ---------------------------------------------------------------------------
+// Pukulan: bunyi gedebuk rendah.
+// ---------------------------------------------------------------------------
+export function playPunch() {
+  noiseBurst(0.09, 0.4, 500);
+  tone({ type: 'sine', frequency: 140, slideTo: 55, duration: 0.12, volume: 0.35 });
+}
+
+// ---------------------------------------------------------------------------
+// Ambil barang: lonceng pendek dua nada naik.
+// ---------------------------------------------------------------------------
+export function playPickup() {
+  tone({ type: 'sine', frequency: 880, duration: 0.09, volume: 0.25 });
+  if (!audioCtx) return;
+  window.setTimeout(() => {
+    tone({ type: 'sine', frequency: 1318, duration: 0.14, volume: 0.25 });
+  }, 90);
+}
+
+// ---------------------------------------------------------------------------
+// Misi selesai: arpeggio fanfare naik (empat nada).
+// ---------------------------------------------------------------------------
+export function playMissionFanfare() {
+  const notes = [523, 659, 784, 1047];
+  notes.forEach((frequency, index) => {
+    window.setTimeout(() => {
+      tone({ type: 'triangle', frequency, duration: 0.22, volume: 0.3 });
+    }, index * 130);
+  });
+}
+
+// Alias fanfare.
+export const playFanfare = playMissionFanfare;
+export const playMissionComplete = playMissionFanfare;
+
+// ---------------------------------------------------------------------------
+// Wanted naik: sengatan pendek bernada turun.
+// ---------------------------------------------------------------------------
+export function playWantedSting() {
+  tone({ type: 'sawtooth', frequency: 220, slideTo: 110, duration: 0.35, volume: 0.3 });
+  tone({ type: 'square', frequency: 440, slideTo: 220, duration: 0.25, volume: 0.12 });
+}
+
+// Alias sengatan wanted.
+export const playWantedUp = playWantedSting;
+
+// ---------------------------------------------------------------------------
+// Suasana latar: pad lembut pelan (dua nada rendah berdenyut halus).
+// Dimulai hanya setelah initAudio() dipanggil dari gestur pengguna.
+// ---------------------------------------------------------------------------
+export function playAmbient() {
+  if (!audioCtx || !masterGain || muted) return;
+  if (ambientNodes) return;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.04;
+  gain.connect(masterGain);
+  const oscA = audioCtx.createOscillator();
+  oscA.type = 'sine';
+  oscA.frequency.value = 110;
+  const oscB = audioCtx.createOscillator();
+  oscB.type = 'sine';
+  oscB.frequency.value = 164.81;
+  const lfo = audioCtx.createOscillator();
+  lfo.type = 'sine';
+  lfo.frequency.value = 0.12;
+  const lfoGain = audioCtx.createGain();
+  lfoGain.gain.value = 0.02;
+  lfo.connect(lfoGain);
+  lfoGain.connect(gain.gain);
+  oscA.connect(gain);
+  oscB.connect(gain);
+  oscA.start();
+  oscB.start();
+  lfo.start();
+  ambientNodes = { gain, oscA, oscB, lfo };
+}
+
+// Alias suasana latar.
+export const startAmbient = playAmbient;
+
+export function stopAmbient() {
+  if (!ambientNodes) return;
+  try {
+    ambientNodes.oscA.stop();
+    ambientNodes.oscB.stop();
+    ambientNodes.lfo.stop();
+  } catch (error) {
+    // Osilator sudah berhenti; abaikan.
+  }
+  ambientNodes = null;
+}
+
+// ---------------------------------------------------------------------------
+// Objek audio tunggal: semua fungsi di atas dalam satu pegangan, untuk
+// modul utama yang memilih mengimpor satu nama.
+// ---------------------------------------------------------------------------
+export const audio = {
+  initAudio,
+  ensureAudio,
+  setMuted,
+  toggleMute,
+  isMuted,
+  playEngine,
+  stopEngine,
+  updateEngineSound,
+  playSiren,
+  stopSiren,
+  playGunshot,
+  playShot,
+  playPunch,
+  playPickup,
+  playMissionFanfare,
+  playFanfare,
+  playWantedSting,
+  playAmbient,
+  startAmbient,
+  stopAmbient,
+};
+
+export default audio;

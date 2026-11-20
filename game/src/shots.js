@@ -1,374 +1,498 @@
-// Staging deterministik untuk screenshot (?shot=chase|drive|street|start & ?seed=).
-// game = { world, player, vehicles, traffic, police, missions, combat, hud, scene, camera, seed }.
-// (v3, Lane S: ditulis ulang penuh di dalam rekaman baru — staging v2
-//  gagal meyakinkan grader karena polisi di cover nyaris tak terlihat dan
-//  jalan di drive/street terlalu sepi untuk kepadatan v3.)
+// KOTA MENTARI — modul shots.
+// Penata 4 foto (screenshot) dari render asli game. Benih 7.
+// Modul ini dipakai skrip retake foto; TIDAK dipakai saat bermain biasa.
+//
+// Cara pakai (dari skrip retake, lewat browser):
+//   await import('/src/shots.js');            // bila modul utama belum memuatnya
+//   window.KOTA_SHOTS.setupShot('chase')    // foto 1
+//   window.KOTA_SHOTS.setupShot('drive')    // foto 2
+//   window.KOTA_SHOTS.setupShot('street')   // foto 3
+//   window.KOTA_SHOTS.setupShot('start')    // foto 4
+//
+// Pementasan memakai tiga jalur, berurutan dari yang paling langsung:
+//   1. Modul permainan sendiri (pemain, kendaraan): mobil oranye target,
+//      mobil polisi, dan traffic/pedestrian yang sudah ada di adegan
+//      dipindah ke posisi foto. Adegan diambil dari induk mesh pemain.
+//   2. Antarmuka debug window.KOTA_DEBUG (pindah pemain, pilih misi,
+//      atur wanted, munculkan polisi, baca keadaan). Tiap pemanggilan
+//      mencoba beberapa nama kandidat yang wajar dan menelan galat,
+//      karena nama metode ditulis lane lain dari prosa yang sama.
+//   3. HUD: banner/toast lewat showToast(text, durationMs) dari modul HUD
+//      (kontrak Lane A); teks kotak misi ditulis langsung ke elemen
+//      #mission-name / #mission-objective — modul HUD hanya menulis ulang
+//      elemen itu bila nilainya berubah, jadi tulisan pementasan bertahan
+//      selama permainan tidak mengubah objective.
+// Kamera: penata kamera debug dicoba bila ada; bila tidak ada, kamera
+// kejar bawaan game (mengikuti pemain dari belakang) yang membingkai foto.
+// Mengemudi (tahan tombol maju sampai kecepatan target) dilakukan skrip
+// retake lewat keyboard asli, bukan modul ini.
 
-// Menara (downtown) = sekitar pusat; Pasar Lama = barat-daya; Pelabuhan = timur.
-const MENARA = { x: 100, z: 0 };
-const PASAR_LAMA = { x: -200, z: 200 };
-const PELABUHAN = { x: 300, z: -100 };
+import { SEED, CAR_MAX_SPEED } from './config.js';
+import { showToast as hudShowToast } from './hud.js';
+import * as Player from './player.js';
+import {
+  createTargetCar,
+  createPoliceCar,
+  setCarSpeed,
+  setCarTargetSpeed,
+} from './vehicles.js';
 
-// Lajur jalan: jalan selebar ~7 unit, jadi lajur kanan/kiri = ±3,5 dari
-// garis tengah; trotoar mulai sekitar ±9. Semua staging di bawah menaruh
-// mobil DI lajur (±3,5) dan pejalan kaki DI trotoar (±9..11), bukan di
-// dalam gedung — itu kesalahan staging v1 yang membuat frame kosong.
-const LANE = 3.5;
-const WALK = 10;
+// ---------------------------------------------------------------------------
+// Benih foto: 7 (sama dengan benih permainan, agar deterministik).
+// Arah timur (+X) dalam radian: sin = 1, cos = 0.
+// Trotoar berada 9 satuan dari tengah jalan.
+// ---------------------------------------------------------------------------
+export const SHOT_SEED = SEED;
+export const SHOT_NAMES = ['chase', 'drive', 'street', 'start'];
+export const HEADING_EAST = Math.PI / 2;
+export const SIDEWALK_OFFSET = 9;
 
-function roadPoint(world, x, z) {
-  if (world && typeof world.nearestRoadPoint === 'function') {
-    const p = world.nearestRoadPoint(x, z);
-    if (p) return { x: p.x, z: p.z };
+// ---------------------------------------------------------------------------
+// Pembantu antarmuka debug (best-effort: gagal diam-diam bila belum ada).
+// ---------------------------------------------------------------------------
+function getDebug() {
+  if (typeof window === 'undefined') return null;
+  return window.KOTA_DEBUG || null;
+}
+
+function getCameraObject() {
+  if (typeof window === 'undefined') return null;
+  if (window.KOTA_CAMERA) return window.KOTA_CAMERA;
+  const debug = getDebug();
+  if (debug && debug.camera) return debug.camera;
+  return null;
+}
+
+// Memanggil metode debug pertama yang ada dari daftar nama kandidat.
+// Mengembalikan nilai kembalian metode itu, atau undefined bila tidak ada
+// kandidat yang cocok atau semuanya melempar.
+function callDebug(names, ...args) {
+  const debug = getDebug();
+  if (!debug) return undefined;
+  for (const name of names) {
+    const fn = debug[name];
+    if (typeof fn === 'function') {
+      try {
+        return fn.apply(debug, args);
+      } catch (error) {
+        // Lanjut ke kandidat berikutnya.
+      }
+    }
   }
-  return { x, z };
+  return undefined;
 }
 
-function copsPositions(police) {
-  if (!police || !police.cops) return [];
-  return police.cops.map((cop) => {
-    const p = (cop.car && cop.car.pos) || cop.pos || (cop.group && cop.group.position) || { x: 0, z: 0 };
-    return { x: p.x, z: p.z };
-  });
-}
-
-// Paksa polisi muncul: setWanted hanya menaikkan bintang, spawn terjadi di
-// police.update (maks 1 per 0,8 dtk). Di mode shot tidak ada loop game,
-// jadi jalankan update beberapa detik secara sinkron sebelum staging.
-function spawnCopsForShot(game, playerCar, steps) {
-  if (!game.police || typeof game.police.update !== 'function') return;
-  const n = typeof steps === 'number' ? steps : 80;
-  for (let i = 0; i < n; i += 1) {
-    game.police.update(0.05, game.player.pos, !!playerCar, game.world, playerCar || undefined);
+// Membaca keadaan game lewat debug (misi, uang, wanted, layar).
+export function readGameState() {
+  const debug = getDebug();
+  if (!debug) return null;
+  if (typeof debug.getState === 'function') {
+    try {
+      return debug.getState();
+    } catch (error) {
+      // Jatuh ke pembacaan properti.
+    }
   }
+  if (debug.state && typeof debug.state === 'object') return debug.state;
+  return {
+    mission: debug.mission,
+    money: debug.money,
+    wanted: debug.wanted,
+    screen: debug.screen,
+  };
 }
 
-function snapCamera(player, camera) {
-  player.updateCamera(camera, 1);
-  player.updateCamera(camera, 1);
+// ---------------------------------------------------------------------------
+// Penata kamera: mencoba penata kamera debug, lalu objek kamera yang
+// diekspos window, lalu diam (kamera kejar bawaan mengambil alih).
+// ---------------------------------------------------------------------------
+export function setShotCamera(x, y, z, lookX, lookY, lookZ) {
+  const done = callDebug(
+    ['setCamera', 'moveCamera', 'placeCamera', 'setCameraPosition'],
+    x, y, z, lookX, lookY, lookZ,
+  );
+  if (done !== undefined) return true;
+  const camera = getCameraObject();
+  if (camera && camera.position && typeof camera.position.set === 'function') {
+    camera.position.set(x, y, z);
+    if (typeof camera.lookAt === 'function') {
+      camera.lookAt(lookX, lookY, lookZ);
+    }
+    return true;
+  }
+  return false;
 }
 
-function putPlayerInCar(game, x, z, heading, color) {
-  const point = roadPoint(game.world, x, z);
-  const car = game.vehicles.createCar(game.scene, {
-    color: color || 0xff6b35,
-    x: point.x,
-    z: point.z,
-    heading,
+// ---------------------------------------------------------------------------
+// Adegan dan penghuninya (mobil traffic, pejalan kaki) — diambil dari
+// induk mesh pemain, yaitu adegan tiga dimensi permainan.
+// ---------------------------------------------------------------------------
+export function getScene() {
+  const mesh = Player.player && Player.player.mesh;
+  if (mesh && mesh.parent) return mesh.parent;
+  return null;
+}
+
+function collectSceneObjects(predicate) {
+  const scene = getScene();
+  const found = [];
+  if (!scene) return found;
+  scene.traverse((obj) => {
+    if (obj && obj.userData && predicate(obj.userData, obj)) found.push(obj);
   });
-  game.vehicles.enterCar(game.player, car);
-  game.player.inCar = true;
-  game.player.car = car;
-  game.player.heading = heading;
-  game.player.pos.copy(car.pos);
-  if (game._cars) game._cars.push(car);
+  return found;
+}
+
+function listCivilCars() {
+  const ownCar = Player.player ? Player.player.car : null;
+  return collectSceneObjects(
+    (data, obj) => data.car && data.car.type === 'civil' && obj !== ownCar,
+  );
+}
+
+function listPedestrians() {
+  return collectSceneObjects((data) => Boolean(data.ped));
+}
+
+function distanceTo(obj, x, z) {
+  const dx = obj.position.x - x;
+  const dz = obj.position.z - z;
+  return Math.sqrt(dx * dx + dz * dz);
+}
+
+function placeCarAt(car, x, z, heading, cruiseSpeed) {
+  car.position.set(x, 0, z);
+  car.rotation.y = heading;
+  if (car.userData && car.userData.car) {
+    car.userData.car.heading = heading;
+    if (typeof cruiseSpeed === 'number') {
+      setCarSpeed(car, cruiseSpeed);
+      setCarTargetSpeed(car, cruiseSpeed);
+    }
+  }
   return car;
 }
 
-// Letakkan satu mobil traffic (atau polisi) di posisi jalan relatif terhadap
-// titik acuan, sepanjang sumbu jalan. forward = (sin h, cos h) untuk
-// heading h; right = (cos h, -sin h). dx positif = di depan, dz positif =
-// geser ke kiri jalan. Posisi dihitung dari `base`, bukan dari posisi
-// pemain yang bisa bergeser saat spawn loop menabrak.
-function placeCarOnRoad(carLike, base, heading, dx, dz) {
-  const fx = Math.sin(heading);
-  const fz = Math.cos(heading);
-  const rx = Math.cos(heading);
-  const rz = -Math.sin(heading);
-  const x = base.x + fx * dx + rx * dz;
-  const z = base.z + fz * dx + rz * dz;
-  const car = carLike.car || carLike;
-  const pos = car.pos || (carLike.pos) || (carLike.group && carLike.group.position);
-  if (pos) pos.set(x, 0, z);
-  if (car) {
-    car.heading = heading;
-    if (car.group) car.group.rotation.y = heading;
-  }
-  if (carLike.group && carLike.group !== (car && car.group)) {
-    carLike.group.position.set(x, 0, z);
-    carLike.group.rotation.y = heading;
-  }
-  return { x, z };
+function addCarToScene(car, x, z, heading) {
+  const scene = getScene();
+  if (!scene) return null;
+  placeCarAt(car, x, z, heading, 0);
+  scene.add(car);
+  return car;
 }
 
-function placePedOnRoad(ped, base, heading, dx, dz, faceHeading) {
-  const p = placeCarOnRoad(ped, base, heading, dx, dz);
-  const group = ped.group;
-  if (group) group.rotation.y = typeof faceHeading === 'number' ? faceHeading : heading;
-  return p;
+// Mobil oranye terang (mobil target misi 2) di posisi foto.
+function placeOrangeCar(x, z, heading) {
+  const car = createTargetCar();
+  return addCarToScene(car, x, z, heading);
 }
 
-function stageChase(game) {
-  // Cover: kejar-kejaran polisi di Menara, wanted 3, pemain ngebut di mobil.
-  // Satu frame harus memuat SEMUANYA: mobil pemain + polisi + bintang
-  // wanted + minimap + teks objective. Pelajaran v2: polisi v2 ditaruh di
-  // dz ±11 (trotoar!) dan di tepi frame sehingga tampak seperti mobil
-  // parkir gelap — di v3 ketiganya membentuk baji DI JALAN, di depan
-  // pemain, di dalam frame, dengan light bar merah/biru menghadap kamera.
-  const point = roadPoint(game.world, MENARA.x, MENARA.z);
-  const heading = Math.PI / 2; // melaju ke +X di avenue Menara
-  const car = putPlayerInCar(game, point.x, point.z, heading, 0xff6b35);
-  car.speed = 30;
-  if (typeof car.maxSpeed === 'number') car.speed = Math.min(car.maxSpeed, 30);
+// Satu mobil polisi di posisi foto (diam, untuk formasi).
+function placePoliceCar(x, z, heading) {
+  const car = createPoliceCar();
+  return addCarToScene(car, x, z, heading);
+}
 
-  if (game.police) {
-    if (typeof game.police.setWanted === 'function') game.police.setWanted(3);
-    else game.police.wanted = 3;
-    spawnCopsForShot(game, car);
-    // Formasi baji: 3 polisi di depan pemain, masing-masing di lajur
-    // sendiri — 2 di lajur kanan/kiri dekat, 1 di tengah sedikit lebih
-    // jauh. Kamera gameplay ada di belakang mobil pemain dan menghadap
-    // ke depan, jadi polisi DI DEPAN-lah yang masuk frame; polisi yang
-    // murni di belakang pemain tidak akan pernah terlihat.
-    const cops = game.police.cops || [];
-    const wedge = [
-      { dx: 9, dz: -LANE }, // kanan-depan, light bar paling jelas
-      { dx: 13, dz: LANE }, // kiri-depan
-      { dx: 19, dz: 0 }, // tengah, memimpin pengejaran
-    ];
-    for (let i = 0; i < Math.min(3, cops.length); i += 1) {
-      const cop = cops[i];
-      const copCar = cop.car || cop;
-      placeCarOnRoad(copCar, point, heading, wedge[i].dx, wedge[i].dz);
-      if (copCar.speed !== undefined) copCar.speed = 27;
+// Kumpulkan mobil traffic ke avenue di depan pemain: `count` mobil
+// terdekat dipindah ke lajur jalan (z selang-seling +-3,5 dari tengah)
+// menghadap timur dengan kecepatan jelajah pelan.
+function gatherTrafficOnAvenue(playerX, roadZ, count, cruiseSpeed) {
+  const cars = listCivilCars();
+  cars.sort((a, b) => distanceTo(a, playerX, roadZ) - distanceTo(b, playerX, roadZ));
+  const chosen = cars.slice(0, count);
+  chosen.forEach((car, i) => {
+    const x = playerX + 25 + i * 15;
+    const z = roadZ + (i % 2 === 0 ? -3.5 : 3.5);
+    placeCarAt(car, x, z, HEADING_EAST, cruiseSpeed);
+  });
+  return chosen.length;
+}
+
+// Kumpulkan pejalan kaki ke trotoar avenue di depan pemain: `count`
+// pejalan kaki terdekat dipindah ke trotoar (sisi selang-seling),
+// berjalan sepanjang sumbu X di tepi jalan.
+function gatherPedestriansOnSidewalks(playerX, roadZ, count) {
+  const peds = listPedestrians();
+  peds.sort((a, b) => distanceTo(a, playerX, roadZ) - distanceTo(b, playerX, roadZ));
+  const chosen = peds.slice(0, count);
+  chosen.forEach((ped, i) => {
+    const state = ped.userData.ped;
+    state.axis = 'z';
+    state.line = roadZ;
+    state.side = i % 2 === 0 ? 1 : -1;
+    state.along = playerX + 15 + i * 12;
+    state.dir = i % 2 === 0 ? 1 : -1;
+    ped.position.set(state.along, 0, roadZ + state.side * SIDEWALK_OFFSET);
+    ped.rotation.y = state.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+  });
+  return chosen.length;
+}
+
+// ---------------------------------------------------------------------------
+// Pembantu pementasan lewat debug + HUD.
+// ---------------------------------------------------------------------------
+function teleportPlayer(x, z) {
+  return callDebug(
+    ['teleport', 'teleportPlayer', 'movePlayerTo', 'setPlayerPosition', 'movePlayer'],
+    x, z,
+  );
+}
+
+function selectMission(number) {
+  return callDebug(['setMission', 'selectMission', 'startMission', 'goToMission'], number);
+}
+
+function setWanted(level) {
+  return callDebug(['setWanted', 'setWantedLevel', 'setStars'], level);
+}
+
+function spawnPoliceNearPlayer() {
+  return callDebug(['spawnPoliceNear', 'spawnPoliceNearby', 'spawnPolice']);
+}
+
+function showToast(text) {
+  // Jalur utama: showToast(text, durationMs) dari modul HUD (kontrak Lane A).
+  // Durasi 60 detik supaya banner masih tampil saat foto diambil.
+  try {
+    hudShowToast(text, 60000);
+    return true;
+  } catch (error) {
+    // Jatuh ke jalur debug / DOM di bawah.
+  }
+  const done = callDebug(['setToast', 'showToast', 'setBanner', 'showBanner'], text);
+  if (done !== undefined) return true;
+  if (typeof document !== 'undefined') {
+    const el = document.querySelector(
+      '[data-toast], #toast, .toast, [data-banner], #banner, .banner',
+    );
+    if (el) {
+      el.textContent = text;
+      return true;
     }
-    // Kembalikan kecepatan pemain (polisi sempat menabrak selama spawn loop).
-    car.speed = 30;
   }
+  return false;
+}
 
-  // Jalan tetap hidup: 4 mobil traffic jauh di depan (di luar formasi
-  // polisi) + 4 pejalan kaki di trotoar, supaya Menara tidak terasa kosong.
-  if (game.traffic && game.traffic.cars) {
-    const far = [
-      { dx: 34, dz: -LANE },
-      { dx: 48, dz: LANE },
-      { dx: 64, dz: -LANE },
-      { dx: 82, dz: LANE },
-    ];
-    far.forEach((o, i) => {
-      const tc = game.traffic.cars[i];
-      if (!tc) return;
-      placeCarOnRoad(tc, point, heading, o.dx, o.dz);
-      if (tc.car) tc.car.heading = heading;
-    });
+// Tulis teks kotak misi langsung ke DOM. Modul HUD hanya menulis ulang
+// elemen ini bila nilai dari permainan berubah, jadi tulisan pementasan
+// bertahan untuk foto.
+function setObjectiveText(text) {
+  const done = callDebug(
+    ['setObjective', 'setObjectiveText', 'overrideObjective'],
+    text,
+  );
+  if (done !== undefined) return true;
+  if (typeof document !== 'undefined') {
+    const el = document.getElementById('mission-objective');
+    if (el) {
+      el.textContent = text;
+      return true;
+    }
   }
-  if (game.traffic && game.traffic.peds) {
-    const walkers = [
-      { dx: 6, dz: -WALK },
-      { dx: 16, dz: WALK },
-      { dx: 26, dz: -WALK },
-      { dx: 38, dz: WALK },
-    ];
-    walkers.forEach((o, i) => {
-      const ped = game.traffic.peds[i];
-      if (!ped) return;
-      placePedOnRoad(ped, point, heading, o.dx, o.dz, heading);
-    });
-  }
+  return false;
+}
 
-  game.hud.showScreen('play');
-  game.hud.update({
-    health: 86,
-    money: game.player.money || 1250,
+function setMissionNameText(text) {
+  if (typeof document !== 'undefined') {
+    const el = document.getElementById('mission-name');
+    if (el) {
+      el.textContent = text;
+      return true;
+    }
+  }
+  return false;
+}
+
+function goToMenu() {
+  return callDebug(
+    ['toMenu', 'showMenu', 'showStart', 'goToStart', 'setScreen'],
+    'menu',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FOTO 1 — cover "chase".
+// Pemain di mobil oranye, 3 mobil polisi formasi baji di depan, wanted 3,
+// toast "Kabur dari polisi!", kecepatan 108, minimap lengkap,
+// objective "Kabur dari polisi!", traffic dan pejalan kaki di latar.
+// Pementasan di jalan lurus Z = 0, pemain menghadap timur (+X) dengan
+// kecepatan penuh (30 satuan/detik = 108 km/jam; dikejar skrip retake
+// dengan menahan tombol maju). Polisi baji dipasang 60-68 satuan di depan
+// supaya mobil sempat mencapai 108 km/jam sebelum sampai ke formasi.
+// ---------------------------------------------------------------------------
+export function setupChase() {
+  selectMission(6);
+  setWanted(3);
+  spawnPoliceNearPlayer();
+  spawnPoliceNearPlayer();
+  spawnPoliceNearPlayer();
+  teleportPlayer(-150, 0);
+  const px = -150;
+  let inCar = false;
+  const orange = placeOrangeCar(px + 4, 0, HEADING_EAST);
+  if (orange) {
+    try {
+      inCar = Player.enterCar(orange);
+    } catch (error) {
+      inCar = false;
+    }
+  }
+  Player.player.money = 14700;
+  let policePlaced = 0;
+  if (placePoliceCar(px + 60, -7, HEADING_EAST)) policePlaced += 1;
+  if (placePoliceCar(px + 68, 0, HEADING_EAST)) policePlaced += 1;
+  if (placePoliceCar(px + 60, 7, HEADING_EAST)) policePlaced += 1;
+  gatherTrafficOnAvenue(px, 0, 4, 10);
+  gatherPedestriansOnSidewalks(px, 0, 6);
+  showToast('Kabur dari polisi!');
+  setObjectiveText('Kabur dari polisi!');
+  setMissionNameText('Jalan Pulang');
+  setShotCamera(px - 14, 7, -10, px + 30, 2, 0);
+  return {
+    shot: 'chase',
+    seed: SHOT_SEED,
+    player: { x: px, z: 0, inCar, speedKmh: 108 },
     wanted: 3,
-    speed: car.speed,
+    policePlaced,
+    toast: 'Kabur dari polisi!',
     objective: 'Kabur dari polisi!',
-    playerPos: game.player.pos,
-    playerHeading: game.player.heading,
-    cops: copsPositions(game.police),
-    marker: { x: point.x + 220, z: point.z },
-    inCar: true,
-    weapon: game.player.weapon,
-  });
-  game.hud.showMessage('Kabur dari polisi!');
-  snapCamera(game.player, game.camera);
-  return { screen: 'play' };
+  };
 }
 
-function stageDrive(game) {
-  // Mengemudi di downtown saat senja, traffic di sekitar, gedung Menara.
-  // Kepadatan v3: SEMUA 20 mobil traffic + 14 pejalan kaki dipakai —
-  // iring-iringan panjang di kedua lajur avenue x=100 plus mobil
-  // menyeberang di persimpangan, trotoar penuh di kedua sisi.
-  const point = roadPoint(game.world, MENARA.x, MENARA.z);
-  const heading = 0; // melaju ke -Z (utara) menyusuri avenue Menara
-  const car = putPlayerInCar(game, point.x, point.z, heading, 0x2f7de1);
-  car.speed = 16;
-  if (game.police && typeof game.police.setWanted === 'function') game.police.setWanted(0);
-  else if (game.police) game.police.wanted = 0;
-
-  // 16 mobil searah/berlawanan di depan (lajur ±3,5, z 26..330) + 4 mobil
-  // menyeberang di persimpangan z=100 dan z=200. Heading ikut diset
-  // supaya mobil menghadap searah jalan, bukan menyerong ke gedung.
-  if (game.traffic && game.traffic.cars) {
-    const spots = [];
-    for (let k = 0; k < 8; k += 1) {
-      spots.push({ x: 103.5, z: 26 + k * 38, h: 0 });
-      spots.push({ x: 96.5, z: 44 + k * 38, h: Math.PI });
-    }
-    spots.push({ x: 58, z: 100, h: Math.PI / 2 });
-    spots.push({ x: 142, z: 100, h: -Math.PI / 2 });
-    spots.push({ x: 52, z: 200, h: Math.PI / 2 });
-    spots.push({ x: 148, z: 200, h: -Math.PI / 2 });
-    spots.forEach((s, i) => {
-      const tc = game.traffic.cars[i];
-      if (!tc) return;
-      const pos = tc.pos || (tc.car && tc.car.pos) || (tc.group && tc.group.position);
-      if (pos) pos.set(s.x, 0, s.z);
-      if (tc.car) {
-        tc.car.heading = s.h;
-        if (tc.car.group) tc.car.group.rotation.y = s.h;
-      }
-    });
-  }
-
-  // 14 pejalan kaki di trotoar (x = 100 ± 11) sepanjang jalan di depan,
-  // berselang-seling kiri-kanan supaya kedua sisi jalan ramai.
-  if (game.traffic && game.traffic.peds) {
-    for (let i = 0; i < 14; i += 1) {
-      const ped = game.traffic.peds[i];
-      if (!ped) continue;
-      const side = i % 2 === 0 ? -1 : 1;
-      const pos = ped.pos || (ped.group && ped.group.position);
-      if (pos) pos.set(100 + side * 11, 0, 18 + i * 14);
-      if (ped.group) ped.group.rotation.y = side < 0 ? 0 : Math.PI;
+// ---------------------------------------------------------------------------
+// FOTO 2 — drive RETAKE (avenue Pusat kota yang RAMAI).
+// Pemain mengemudi di avenue Pusat kota: 6+ mobil traffic di depan,
+// 8+ pejalan kaki di trotoar, 1 mobil polisi di kejauhan, penanda misi
+// kuning di depan, kecepatan sekitar 60, minimap lengkap, objective misi
+// terlihat. BUKAN jalan kosong.
+// Pementasan di jalan Z = 0 menembus Pusat kota (X -100 sampai 200),
+// pemain menghadap timur dengan kecepatan ~16,7 satuan/detik (60 km/jam;
+// dicapai skrip retake dengan menahan tombol maju). Traffic dan pejalan
+// kaki yang sudah ada di adegan dikumpulkan ke avenue di depan pemain.
+// ---------------------------------------------------------------------------
+export function setupDrive() {
+  selectMission(1);
+  setWanted(0);
+  teleportPlayer(-60, 0);
+  const px = -60;
+  let inCar = false;
+  const orange = placeOrangeCar(px + 4, 0, HEADING_EAST);
+  if (orange) {
+    try {
+      inCar = Player.enterCar(orange);
+    } catch (error) {
+      inCar = false;
     }
   }
-
-  game.hud.showScreen('play');
-  game.hud.update({
-    health: 100,
-    money: game.player.money || 1250,
+  const carsGathered = gatherTrafficOnAvenue(px, 0, 8, 10);
+  const pedsGathered = gatherPedestriansOnSidewalks(px, 0, 10);
+  let policePlaced = 0;
+  if (placePoliceCar(20, 4, HEADING_EAST)) policePlaced += 1;
+  setObjectiveText('Pergi ke penanda kuning');
+  setMissionNameText('Paket Kilat');
+  setShotCamera(px - 14, 7, -9, 30, 2, 0);
+  return {
+    shot: 'drive',
+    seed: SHOT_SEED,
+    player: { x: px, z: 0, inCar, speedKmh: 60 },
     wanted: 0,
-    speed: car.speed,
-    objective: 'Antar paket ke Menara',
-    playerPos: game.player.pos,
-    playerHeading: game.player.heading,
-    cops: [],
-    marker: { x: point.x, z: point.z + 160 },
-    inCar: true,
-    weapon: game.player.weapon,
-  });
-  snapCamera(game.player, game.camera);
-  return { screen: 'play' };
-}
-
-function stageStreet(game) {
-  // Jalan kaki di Pasar Lama: pejalan kaki + marker misi kuning + HUD lengkap.
-  // Kepadatan v3: 20 pejalan kaki memadati trotoar dan penyeberangan di
-  // depan pemain + 4 mobil di jalan, jadi Pasar Lama terasa seperti pasar.
-  const point = roadPoint(game.world, PASAR_LAMA.x, PASAR_LAMA.z);
-  game.player.reset({ x: point.x, z: point.z });
-  // Satu mobil parkir tepat di titik spawn (-200,200) — geser Raka ke
-  // samping supaya figur tidak tertutup mobil dari kamera belakang.
-  game.player.pos.x += 6;
-  game.player.pos.z += 6;
-  // Menghadap +X menyusuri jalan z=200 — marker, pejalan kaki, dan
-  // deretan gedung Pasar Lama masuk satu frame.
-  game.player.heading = Math.PI / 2;
-  game.player.group.rotation.y = game.player.heading;
-  game.player.health = 100;
-  if (game.police && typeof game.police.setWanted === 'function') game.police.setWanted(1);
-  else if (game.police) game.police.wanted = 1;
-  spawnCopsForShot(game, null, 40); // titik merah polisi di minimap (2 dtk: belum sampai ke pemain)
-
-  // 20 pejalan kaki: trotoar kiri-kanan (z = 200 ± 9) dan menyeberang
-  // (z = 200) sepanjang jalan di depan, x dari -188 sampai -92.
-  if (game.traffic && game.traffic.peds) {
-    const pedSpots = [];
-    for (let k = 0; k < 10; k += 1) {
-      pedSpots.push({ x: -188 + k * 10, z: 191 });
-      pedSpots.push({ x: -184 + k * 10, z: 209 });
-    }
-    // 4 penyeberang di tengah jalan, di antara kerumunan trotoar.
-    pedSpots[3] = { x: -158, z: 200 };
-    pedSpots[9] = { x: -132, z: 200 };
-    pedSpots[13] = { x: -146, z: 200 };
-    pedSpots[17] = { x: -120, z: 200 };
-    pedSpots.forEach((s, i) => {
-      const ped = game.traffic.peds[i];
-      if (!ped) return;
-      const pos = ped.pos || (ped.group && ped.group.position);
-      if (pos) pos.set(s.x, 0, s.z);
-      if (ped.group) ped.group.rotation.y = i % 2 === 0 ? Math.PI / 2 : -Math.PI / 2;
-    });
-  }
-
-  // 4 mobil di jalan Pasar Lama: 2 melaju searah di lajur jauh, 2 parkir
-  // di lajur dekat — cukup jauh dari pemain supaya figur tetap jelas.
-  if (game.traffic && game.traffic.cars) {
-    const streetCars = [
-      { x: -168, z: 196.5, h: Math.PI / 2 },
-      { x: -140, z: 196.5, h: Math.PI / 2 },
-      { x: -124, z: 203.5, h: -Math.PI / 2 },
-      { x: -104, z: 196.5, h: Math.PI / 2 },
-    ];
-    streetCars.forEach((s, i) => {
-      const tc = game.traffic.cars[i];
-      if (!tc) return;
-      const pos = tc.pos || (tc.car && tc.car.pos) || (tc.group && tc.group.position);
-      if (pos) pos.set(s.x, 0, s.z);
-      if (tc.car) {
-        tc.car.heading = s.h;
-        if (tc.car.group) tc.car.group.rotation.y = s.h;
-      }
-    });
-  }
-
-  // Marker misi 3D: di mode shot missions.start() tidak pernah jalan,
-  // jadi beam kuning tidak terlihat di v1 — tampilkan langsung di titik
-  // yang sama dengan marker minimap (tengah jalan di depan pemain).
-  const marker = { x: -150, z: 200 };
-  if (game.missions && game.missions.marker) {
-    game.missions.marker.visible = true;
-    game.missions.marker.position.set(marker.x, 0, marker.z);
-  }
-
-  game.hud.showScreen('play');
-  game.hud.update({
-    health: 100,
-    money: game.player.money || 850,
-    wanted: 1,
-    speed: 0,
+    carsGathered,
+    pedsGathered,
+    policeInDistance: policePlaced,
     objective: 'Pergi ke penanda kuning',
-    playerPos: game.player.pos,
-    playerHeading: game.player.heading,
-    cops: copsPositions(game.police),
-    marker,
-    inCar: false,
-    weapon: game.player.weapon,
-  });
-  game.hud.showMessage('Misi: Paket Kilat — antar 3 paket');
-  snapCamera(game.player, game.camera);
-  return { screen: 'play' };
+    note: 'Avenue Pusat kota harus ramai: 6+ mobil traffic, 8+ pejalan kaki.',
+  };
 }
 
-function stageStart(game) {
-  // Start screen di atas kota: kamera tinggi memandang Menara saat senja.
-  const point = roadPoint(game.world, MENARA.x, MENARA.z);
-  game.player.reset({ x: point.x, z: point.z + 40 });
-  game.hud.setStart(false);
-  game.camera.position.set(point.x + 120, 130, point.z + 190);
-  game.camera.lookAt(point.x, 20, point.z);
-  return { screen: 'title' };
-}
-
-export function stageShot(name, game) {
-  if (!game || !game.player || !game.hud || !game.camera) return { screen: 'title' };
-  if (game.hud.setWorld && game.world) game.hud.setWorld(game.world);
-  switch (name) {
-    case 'chase':
-      return stageChase(game);
-    case 'drive':
-      return stageDrive(game);
-    case 'street':
-      return stageStreet(game);
-    case 'start':
-      return stageStart(game);
-    default:
-      return stageStart(game);
+// ---------------------------------------------------------------------------
+// FOTO 3 — street.
+// Pemain JALAN KAKI (kemeja oranye), pejalan kaki di trotoar,
+// 1 mobil traffic, banner "Paket 1 dari 3 terantar",
+// wanted 1, minimap lengkap, objective "Pergi ke penanda kuning".
+// Pasar Lama (Z = 0, X -200); pemain menghadap timur, traffic dan
+// pejalan kaki dikumpulkan ke dekat pemain.
+// ---------------------------------------------------------------------------
+export function setupStreet() {
+  selectMission(1);
+  setWanted(1);
+  teleportPlayer(-200, 0);
+  const px = -200;
+  Player.player.heading = HEADING_EAST;
+  try {
+    if (Player.player && !Player.player.onFoot) Player.exitCar();
+  } catch (error) {
+    // Sudah jalan kaki; abaikan.
   }
+  const carsGathered = gatherTrafficOnAvenue(px, 0, 1, 8);
+  const pedsGathered = gatherPedestriansOnSidewalks(px, 0, 6);
+  showToast('Paket 1 dari 3 terantar');
+  setObjectiveText('Pergi ke penanda kuning');
+  setMissionNameText('Paket Kilat');
+  setShotCamera(px - 14, 6, -8, px + 20, 2, 0);
+  return {
+    shot: 'street',
+    seed: SHOT_SEED,
+    player: { x: px, z: 0, onFoot: true },
+    wanted: 1,
+    carsGathered,
+    pedsGathered,
+    banner: 'Paket 1 dari 3 terantar',
+    objective: 'Pergi ke penanda kuning',
+  };
 }
 
-// Dipakai main.js untuk penanda misi di minimap (ekspor kecil, bukan bagian kontrak shot).
-export const SHOT_DISTRICTS = { MENARA, PASAR_LAMA, PELABUHAN };
+// ---------------------------------------------------------------------------
+// FOTO 4 — start.
+// Layar mulai: judul KOTA MENTARI besar, paragraf cerita (Raka Pratama,
+// Bos Darma, Geng Ombak, Mira Santosa), daftar kontrol, tombol "Mulai Baru",
+// kota dari udara di latar (gelap, terbaca).
+// ---------------------------------------------------------------------------
+export function setupStart() {
+  goToMenu();
+  setShotCamera(0, 260, 260, 0, 0, 0);
+  return {
+    shot: 'start',
+    seed: SHOT_SEED,
+    screen: 'menu',
+    note: 'Layar mulai dengan kota dari udara di latar.',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher: setupShot('chase' | 'drive' | 'street' | 'start').
+// ---------------------------------------------------------------------------
+export function setupShot(name) {
+  if (name === 'chase') return setupChase();
+  if (name === 'drive') return setupDrive();
+  if (name === 'street') return setupStreet();
+  if (name === 'start') return setupStart();
+  throw new Error(`Nama foto tidak dikenal: ${name}`);
+}
+
+// Alias dispatcher.
+export const stageShot = setupShot;
+export const stagePhoto = setupShot;
+
+// ---------------------------------------------------------------------------
+// Objek penata foto tunggal + pendaftaran ke window untuk skrip retake.
+// ---------------------------------------------------------------------------
+export const shots = {
+  setupShot,
+  stageShot,
+  stagePhoto,
+  setupChase,
+  setupDrive,
+  setupStreet,
+  setupStart,
+  readGameState,
+  setShotCamera,
+  getScene,
+  SHOT_SEED,
+  SHOT_NAMES,
+};
+
+if (typeof window !== 'undefined') {
+  window.KOTA_SHOTS = shots;
+}
+
+export default shots;
