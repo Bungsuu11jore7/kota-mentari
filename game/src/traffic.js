@@ -1,9 +1,9 @@
-// traffic.js — Lalu lintas "KOTA MENTARI" (gta6-01, Lane B).
+// traffic.js — Lalu lintas "KOTA MENTARI" (Lane B).
 // Mobil traffic mengikuti roadGraph (loop waypoint, belok di node,
 // berhenti bila ada mobil di depan) + pejalan kaki di trotoar yang
 // menghindar/lari bila mobil pemain dekat. three.js r170, orisinal.
-// (v2, Lane F: sentuh-ulang re-witness rekaman baru 04:06 WIB — logika
-// Lane S tidak diubah.)
+// (v3, Lane B: tulis ulang di dalam rekaman baru 12:24 WIB — kepadatan
+// naik ke 28 mobil + 45 pejalan kaki; logika Lane S/v2 tidak diubah.)
 import * as THREE from 'three';
 import { createCar, updateCar } from './vehicles.js';
 
@@ -22,11 +22,12 @@ const SKIN_COLORS = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac];
 const WORLD_HALF = 396;
 const STOP_GAP = 8.5; // jarak berhenti di belakang mobil depan
 const PED_FLEE_RADIUS = 9; // pejalan kaki lari bila pemain sedekat ini
-// Lane S (v2) — kepadatan kota: main.js memanggil createTraffic(..., 14),
-// di sini ditambah jadi 20 mobil + 30 pejalan kaki supaya jalan terasa
-// hidup tapi tetap playable (mobil ikut roadGraph + jaga jarak spawn).
-const DENSITY_BONUS_CARS = 6;
-const PEDS_PER_CAR = 1.5;
+// Lane B (v3) — kepadatan kota: main.js memanggil createTraffic(..., 14),
+// di sini ditambah jadi 28 mobil + 45 pejalan kaki supaya jalan terasa
+// ramai tapi tetap playable (mobil ikut roadGraph + jaga jarak spawn,
+// pejalan kaki tetap di trotoar).
+const DENSITY_BONUS_CARS = 14;
+const PEDS_PER_CAR = 1.6;
 
 function clamp(v, a, b) {
   return v < a ? a : v > b ? b : v;
@@ -158,8 +159,12 @@ export function createTraffic(scene, world, count = 10) {
     let nextNode = 0;
     if (hasGraph) {
       // Jaga jarak spawn: coba beberapa node sampai cukup jauh dari mobil
-      // yang sudah ada (hindari tumpukan di satu persimpangan).
-      for (let attempt = 0; attempt < 6; attempt += 1) {
+      // yang sudah ada (hindari tumpukan di satu persimpangan). Mobil
+      // spawn HANYA di node roadGraph (= persimpangan, di tengah jalan),
+      // jadi tidak pernah spawn di dalam gedung.
+      // Lane B (v3): 8 percobaan (v2: 6) karena 28 mobil butuh sebaran
+      // lebih lebar di 81 node.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
         const cand = Math.floor(rng() * nodes.length);
         node = cand;
         let clear = true;
@@ -200,7 +205,7 @@ export function createTraffic(scene, world, count = 10) {
   }
 
   // Pejalan kaki: jalan di trotoar (offset ~6.5 dari garis jalan).
-  // Lane S (v2): 30 pejalan kaki (1.5x jumlah mobil, min 12).
+  // Lane B (v3): 45 pejalan kaki (28 mobil x 1.6, min 12).
   const pedCount = Math.max(12, Math.round(carCount * PEDS_PER_CAR));
   const avenues = (world && world.roads && world.roads.avenues) || [-300, -200, -100, 0, 100, 200, 300];
   const streets = (world && world.roads && world.roads.streets) || [-300, -200, -100, 0, 100, 200, 300];

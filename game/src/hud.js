@@ -10,6 +10,13 @@ export function createHUD() {
   const MAP_Z_MAX = 420;
   const MAP_SIZE = 200;
 
+  // Posisi spawn pemain (dipakai minimap layar TAMAT bila belum ada state
+  // permainan yang tersimpan — misalnya TAMAT dibuka lewat Lanjutkan dari
+  // save yang sudah tamat, tanpa satu pun frame permainan).
+  const SPAWN_POS = { x: 0, z: 50 };
+  // Teks objektif setelah semua misi selesai — tidak pernah lagi teks misi.
+  const FINISHED_OBJECTIVE = 'Semua misi selesai!';
+
   function el(id, tag, parent, className) {
     let node = document.getElementById(id);
     if (node) return node;
@@ -76,6 +83,15 @@ export function createHUD() {
 
   let messageTimer = 0;
   let roads = null; // { avenues:[x], streets:[z] } dari world, diset main.js via setWorld
+  // Status terakhir yang masuk lewat update() — dipakai layar TAMAT untuk
+  // menggambar minimap saat loop permainan sudah berhenti.
+  let lastState = null;
+  // Uang akhir yang ditampilkan layar TAMAT (total akumulasi pemain).
+  let finalMoney = null;
+  // True sejak showFinished sampai layar lain ditampilkan (game baru /
+  // kembali ke judul): update() tidak boleh menimpa uang & objektif tamat
+  // dengan nilai basi dari state permainan.
+  let finished = false;
   const handlers = {
     onNew: null, onContinue: null, onResume: null, onRestart: null, onNext: null,
     onFinishedTitle: null, onFinishedNew: null,
@@ -87,6 +103,12 @@ export function createHUD() {
       if (node) node.classList.toggle('hidden', key !== name);
     }
     root.classList.toggle('hidden', name === 'title');
+    if (name !== 'finished') {
+      // Keluar dari layar TAMAT: kembalikan HUD ke perilaku normal.
+      finished = false;
+      finalMoney = null;
+      root.style.zIndex = '';
+    }
   }
 
   function setStart(hasSave) {
@@ -102,6 +124,12 @@ export function createHUD() {
   }
 
   function showObjective(text) {
+    // Setelah tamat, objektif terkunci di teks selesai — panggilan dari
+    // permainan (mis. startMission lama) tidak boleh mengembalikannya.
+    if (finished) {
+      objectiveText.textContent = FINISHED_OBJECTIVE;
+      return;
+    }
     objectiveText.textContent = text;
   }
 
@@ -113,17 +141,59 @@ export function createHUD() {
 
   // B-2 (v2): layar TAMAT — ditampilkan sekali setelah misi terakhir selesai.
   // stats: { money, completed, total }.
+  // Perbaikan v3 (tiga cacat yang terlihat di screenshot TAMAT v2):
+  //  (a) Uang HUD: main.js memanggil showFinished dengan player.money
+  //      (total akumulasi, sudah benar di teks stats), tapi loop permainan
+  //      berhenti saat layar TAMAT tampil sehingga update() tidak pernah
+  //      berjalan lagi — money-text stuck di nilai awal "$0" dari HTML,
+  //      terutama di jalur Lanjutkan dari save yang sudah tamat (tanpa satu
+  //      pun frame permainan). Karena itu showFinished menulis sendiri
+  //      uang akhir ke money-text, dari nilai yang sama dengan stats.
+  //  (b) Minimap: canvas minimap juga hanya digambar dari update(), jadi di
+  //      jalur yang sama ia tetap kosong. showFinished menggambarnya sekali
+  //      dari state terakhir (atau posisi spawn bila belum ada state), dan
+  //      HUD dinaikkan di atas overlay TAMAT (z-index 10) supaya minimap
+  //      — beserta uang, bintang, dan objektif — benar-benar terlihat,
+  //      bukan redup di balik lapisan gelap overlay.
+  //  (c) Objektif basi: setelah misi terakhir, currentObjective() bernilai
+  //      null sehingga teks fallback "Pergi ke penanda kuning" yang tampil;
+  //      update() terakhir di step() bahkan menimpa teks TAMAT. Flag
+  //      `finished` mengunci objektif ke "Semua misi selesai!" sampai layar
+  //      lain ditampilkan.
   function showFinished(stats) {
     const s = stats || {};
     const done = typeof s.completed === 'number' ? s.completed : 6;
     const total = typeof s.total === 'number' ? s.total : 6;
-    const money = typeof s.money === 'number' ? s.money : 0;
+    // Uang akhir = total akumulasi pemain yang diteruskan pemanggil
+    // (player.money). Terima juga alias bila pemanggil memakai nama lain,
+    // lalu jatuh ke uang terakhir yang pernah tampil di HUD.
+    const money = typeof s.money === 'number' ? s.money
+      : typeof s.totalMoney === 'number' ? s.totalMoney
+      : typeof s.finalMoney === 'number' ? s.finalMoney
+      : (lastState && typeof lastState.money === 'number' ? lastState.money : 0);
+    finalMoney = Math.floor(money);
     if (finishedStats) {
       finishedStats.textContent = `Semua ${done} dari ${total} misi selesai. ` +
         `Raka naik ke kapal terakhir dan meninggalkan Kota Mentari — ` +
-        `uang akhir: $${Math.floor(money)}.`;
+        `uang akhir: $${finalMoney}.`;
     }
     showScreen('finished');
+    finished = true;
+    // (a) Tulis uang akhir langsung ke HUD — jangan tunggu update().
+    moneyText.textContent = `$${finalMoney}`;
+    // (c) Kunci teks objektif tamat.
+    objectiveText.textContent = FINISHED_OBJECTIVE;
+    // HUD di atas overlay TAMAT (z-index overlay = 10) supaya minimap dan
+    // info HUD terlihat; showScreen() mengembalikannya saat layar berganti.
+    root.style.zIndex = '11';
+    // (b) Gambar minimap sekali dari state terakhir, atau dari posisi spawn
+    // bila TAMAT dibuka tanpa satu pun frame permainan.
+    drawMinimap(lastState || {
+      playerPos: SPAWN_POS,
+      playerHeading: 0,
+      marker: null,
+      cops: [],
+    });
   }
 
   function showOver(reason) {
@@ -144,6 +214,7 @@ export function createHUD() {
 
   function drawMinimap(state) {
     if (!mapCtx) return;
+    const st = state || {};
     mapCtx.clearRect(0, 0, MAP_SIZE, MAP_SIZE);
     mapCtx.fillStyle = 'rgba(8, 18, 24, 0.85)';
     mapCtx.fillRect(0, 0, MAP_SIZE, MAP_SIZE);
@@ -167,8 +238,8 @@ export function createHUD() {
       mapCtx.stroke();
     }
     // Marker misi (kuning).
-    if (state.marker) {
-      const [mx, mz] = toMap(state.marker.x, state.marker.z);
+    if (st.marker) {
+      const [mx, mz] = toMap(st.marker.x, st.marker.z);
       mapCtx.fillStyle = '#ffd43b';
       mapCtx.beginPath();
       mapCtx.moveTo(mx, mz - 7);
@@ -179,9 +250,9 @@ export function createHUD() {
       mapCtx.fill();
     }
     // Polisi (merah).
-    if (state.cops) {
+    if (st.cops) {
       mapCtx.fillStyle = '#ff4d4d';
-      for (const cop of state.cops) {
+      for (const cop of st.cops) {
         const [mx, mz] = toMap(cop.x, cop.z);
         mapCtx.beginPath();
         mapCtx.arc(mx, mz, 3.5, 0, Math.PI * 2);
@@ -189,9 +260,9 @@ export function createHUD() {
       }
     }
     // Pemain: panah putih searah heading.
-    if (state.playerPos) {
-      const [mx, mz] = toMap(state.playerPos.x, state.playerPos.z);
-      const a = state.playerHeading || 0;
+    if (st.playerPos) {
+      const [mx, mz] = toMap(st.playerPos.x, st.playerPos.z);
+      const a = st.playerHeading || 0;
       mapCtx.save();
       mapCtx.translate(mx, mz);
       // M-1 (v2): panah digambar menunjuk (0,-7) = arah -Z canvas (mz naik
@@ -219,14 +290,25 @@ export function createHUD() {
   }
 
   function update(state) {
+    lastState = state || null;
     const health = Math.max(0, Math.min(100, state.health ?? 100));
     healthFill.style.width = `${health}%`;
     healthFill.style.background = health > 50 ? '#4ade80' : health > 25 ? '#facc15' : '#ef4444';
     healthText.textContent = `❤ ${Math.round(health)}`;
-    moneyText.textContent = `$${Math.floor(state.money ?? 0)}`;
+    // Setelah tamat, uang HUD terkunci di uang akhir — jangan biarkan state
+    // basi (mis. uang 0 dari reset) menimpanya.
+    moneyText.textContent = finished && finalMoney !== null
+      ? `$${finalMoney}`
+      : `$${Math.floor(state.money ?? 0)}`;
     const wanted = Math.max(0, Math.min(5, state.wanted ?? 0));
     stars.forEach((star, i) => star.classList.toggle('active', i < wanted));
-    if (state.objective) objectiveText.textContent = state.objective;
+    // Setelah tamat, objektif terkunci di teks selesai (state.objective di
+    // titik ini adalah fallback basi "Pergi ke penanda kuning").
+    if (finished) {
+      objectiveText.textContent = FINISHED_OBJECTIVE;
+    } else if (state.objective) {
+      objectiveText.textContent = state.objective;
+    }
     if (state.inCar) {
       speedBox.classList.remove('hidden');
       speedValue.textContent = `${Math.round(Math.abs(state.speed || 0) * 3.6)} km/h`;

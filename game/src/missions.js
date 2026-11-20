@@ -11,6 +11,13 @@
 // hooks (opsional): { onSetWanted(n), onSpawnEnemies([{x,z,jacket}]), onMessage(text) }
 // onComplete(index, reward) dan onFail(reason) adalah properti yang bisa
 // di-assign oleh main.js; default-nya no-op sehingga aman dipanggil.
+//
+// v3: currentObjective() TIDAK PERNAH mengembalikan null saat ada misi yang
+// bisa ditampilkan — teks objective selalu mencerminkan misi aktif saat ini,
+// dan saat semua misi selesai ia mengembalikan "Semua misi selesai!".
+// Sebelum v3, currentObjective() mengembalikan null begitu misi selesai
+// (active = -1), sehingga main.js jatuh ke teks fallback generik yang basi
+// dan tidak mencerminkan progres pemain.
 
 import * as THREE from 'three';
 
@@ -27,6 +34,8 @@ function buildMissions(spawn) {
   // koridor dermaga (x 396-524, z 344-356, lihat world.isBlocked). Posisi
   // lama (harbor.x-20, harbor.z+60) = (450,410) berada di luar batas dunia
   // yang bisa dilalui (|z|>396), jadi objektif tak pernah tercapai.
+  // spawn.harbor dunia adalah (470, 350): kapal dan tas misi 5 sama-sama
+  // di titik itu.
   const ship = { x: harbor.x, z: harbor.z };
 
   return [
@@ -36,8 +45,9 @@ function buildMissions(spawn) {
       reward: REWARDS[0],
       wanted: 0,
       briefing:
-        'Hari pertama Raka sebagai kurir lepas. Mira Santosa menitipkan tiga paket ' +
-        'untuk tiga alamat di penjuru Kota Mentari. Antar semuanya sebelum senja.',
+        'Tujuan: antar tiga paket sebagai kurir lepas. Ambil paket di gudang ' +
+        'Pasar Lama, lalu antar ke Warung Bu Sari di Menara, Toko Kelontong ' +
+        'di Pesisir, dan Kios Pelabuhan. Hadiah: $500.',
       dialog: [
         { who: 'Mira', line: 'Raka, tiga paket, tiga alamat. Jangan sampai ada yang nyasar, ya.' },
         { who: 'Raka', line: 'Tenang. Kota ini sudah kuhafal sampai gang terkecilnya.' },
@@ -56,9 +66,9 @@ function buildMissions(spawn) {
       reward: REWARDS[1],
       wanted: 0,
       briefing:
-        'Bos Darma butuh sebuah mobil sport yang terparkir di Menara — "dipinjam" ' +
-        'tanpa surat, tanpa jejak. Ambil mobilnya, lalu bawa ke Bengkel Jaya ' +
-        'di Pasar Lama untuk diganti pelatnya.',
+        'Tujuan: "pinjam" mobil sport oranye yang terparkir di Menara, lalu ' +
+        'bawa ke Bengkel Jaya di Pasar Lama untuk diganti pelatnya. Tekan E ' +
+        'di dekat mobil target untuk masuk. Hadiah: $1200.',
       dialog: [
         { who: 'Mira', line: 'Bos Darma minta tolong. Ada mobil oranye terparkir di Menara.' },
         { who: 'Raka', line: 'Pinjam? Atau... pinjam selamanya?' },
@@ -76,9 +86,10 @@ function buildMissions(spawn) {
       reward: REWARDS[2],
       wanted: 2,
       briefing:
-        'Kamera pengawas merekam aksi Raka di Menara. Polisi Kota Mentari kini ' +
-        'memburunya dengan wanted 2 bintang. Kabur, sembunyi, dan tunggu sampai ' +
-        'mereka kehilangan jejak.',
+        'Tujuan: hilangkan wanted 2 bintang. Kamera pengawas merekam aksi ' +
+        'Raka di Menara, jadi polisi Kota Mentari kini memburunya. Kabur, ' +
+        'sembunyi di tempat persembunyian Bukit, dan tunggu sampai mereka ' +
+        'kehilangan jejak (wanted kembali 0). Hadiah: $2000.',
       dialog: [
         { who: 'Mira', line: 'Raka, wajahmu terekam kamera! Polisi sudah menyebar.' },
         { who: 'Raka', line: 'Dua bintang? Baru pemanasan.' },
@@ -94,9 +105,9 @@ function buildMissions(spawn) {
       reward: REWARDS[3],
       wanted: 0,
       briefing:
-        'Mira dicegat tiga anggota Geng Ombak di gang Pasar Lama. Mereka menuntut ' +
-        'uang perlindungan yang tak pernah disepakati. Raka harus datang — ' +
-        'dengan tangan kosong atau dengan tinju.',
+        'Tujuan: selamatkan Mira yang dicegat tiga anggota Geng Ombak di gang ' +
+        'Pasar Lama. Temui Mira di gang itu, lalu kalahkan ketiga anggota ' +
+        'geng tersebut. Hadiah: $3000.',
       dialog: [
         { who: 'Mira', line: 'Raka! Mereka mengepungku di gang Pasar Lama!' },
         { who: 'Raka', line: 'Tahan di sana, Mira. Aku datang.' },
@@ -120,9 +131,10 @@ function buildMissions(spawn) {
       reward: REWARDS[4],
       wanted: 4,
       briefing:
-        'Satu tas berisi uang setoran Bos Darma tertahan di gudang pelabuhan. ' +
-        'Ambil tasnya, lalu kabur ke tempat persembunyian di Bukit sebelum ' +
-        'polisi menutup seluruh jalan keluar pelabuhan.',
+        'Tujuan: ambil tas berisi uang setoran Bos Darma di gudang pelabuhan ' +
+        '(470, 350), lalu kabur ke tempat persembunyian di Bukit sebelum ' +
+        'polisi menutup seluruh jalan keluar pelabuhan. Wanted 4 bintang ' +
+        'aktif sejak misi dimulai. Hadiah: $8000.',
       dialog: [
         { who: 'Mira', line: 'Tasnya ada di gudang pelabuhan. Begitu kau ambil, alarm pasti bunyi.' },
         { who: 'Raka', line: 'Empat bintang. Aku pernah lolos dari yang lebih buruk.' },
@@ -139,9 +151,10 @@ function buildMissions(spawn) {
       reward: REWARDS[5],
       wanted: 5,
       briefing:
-        'Seluruh Kota Mentari kini memburu Raka. Satu jalan keluar tersisa: ' +
-        'kapal terakhir di pelabuhan yang berlayar saat matahari terbenam. ' +
-        'Hilangkan wanted 5 bintang, capai kapal itu — dan mulailah hidup baru.',
+        'Tujuan: hilangkan wanted 5 bintang, lalu capai kapal terakhir di ' +
+        'pelabuhan (470, 350) yang berlayar saat matahari terbenam. Seluruh ' +
+        'Kota Mentari kini memburu Raka — kapal itu satu-satunya jalan ' +
+        'keluar. Hadiah: $15000.',
       dialog: [
         { who: 'Mira', line: 'Ini terakhir kalinya, Raka. Kapal berlayar saat senja.' },
         { who: 'Raka', line: 'Lima bintang... dan satu kapal. Cukup adil.' },
@@ -237,6 +250,15 @@ export function createMissions(world, scene, hooks) {
     return m.objectives[state.objectiveIndex] || null;
   }
 
+  // Misi berikutnya yang belum selesai (dipakai saat tidak ada misi aktif:
+  // layar "complete" di antara dua misi, sebelum misi pertama dimulai).
+  function nextMission() {
+    for (let i = 0; i < list.length; i += 1) {
+      if (!state.completed.includes(i)) return list[i];
+    }
+    return null;
+  }
+
   function placeMarker(obj) {
     if (!obj) { marker.visible = false; return; }
     marker.visible = true;
@@ -279,10 +301,25 @@ export function createMissions(world, scene, hooks) {
     if (typeof api.onFail === 'function') api.onFail(reason || 'Misi gagal', index);
   };
 
+  // v3: teks objective SELALU mencerminkan progres saat ini — tidak pernah
+  // null saat ada yang bisa ditampilkan, tidak pernah basi:
+  // - misi aktif -> objektif aktif misi itu;
+  // - semua misi selesai -> "Semua misi selesai!";
+  // - tidak ada misi aktif tapi masih ada misi tersisa (layar complete di
+  //   antara misi, atau sebelum misi pertama) -> objektif pertama misi
+  //   berikutnya, supaya HUD tidak menampilkan teks misi yang baru selesai.
   api.currentObjective = function currentObjective() {
+    if (api.finished) return { text: 'Semua misi selesai!', pos: null };
     const obj = currentObjectiveDef();
-    if (!obj) return null;
-    return { text: obj.text, pos: { x: obj.pos.x, z: obj.pos.z } };
+    if (obj) return { text: obj.text, pos: { x: obj.pos.x, z: obj.pos.z } };
+    const mission = currentMission();
+    if (mission) return { text: mission.title, pos: null };
+    const next = nextMission();
+    if (next && next.objectives.length > 0) {
+      const first = next.objectives[0];
+      return { text: first.text, pos: { x: first.pos.x, z: first.pos.z } };
+    }
+    return { text: 'Semua misi selesai!', pos: null };
   };
 
   api.currentMission = function currentMissionInfo() {

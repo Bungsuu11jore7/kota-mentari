@@ -1,9 +1,18 @@
-// police.js — Polisi "KOTA MENTARI" (gta6-01, Lane B).
+// police.js — Polisi "KOTA MENTARI".
 // Wanted 0–5 bintang. Mobil polisi hitam-putih + light bar merah/biru
 // berkedip + sirene (callback). AI kejar pemain, menabrak = damage.
 // Bersembunyi (semua polisi >100 unit selama 12 dtk) = wanted -1.
 // Polisi menyentuh pemain jalan kaki 3 dtk = 'busted'.
 // three.js r170, orisinal, nol aset/network eksternal.
+//
+// v3: roadblock — saat wanted >= 3, separuh polisi (indeks ganjil) tidak
+// lagi mengekor dari belakang, melainkan memotong jalan: mereka menuju
+// titik potong di DEPAN arah gerak pemain (prediksi posisi dari kecepatan
+// pemain), lalu menahan posisi di sana menghadap ke arah pemain datang.
+// Polisi lain tetap mengejar seperti biasa, jadi pemain dijepit dari
+// depan dan belakang. Kecepatan dasar tidak berubah: roadblock hanya
+// mengubah TARGET navigasi, bukan angka kecepatan.
+
 import * as THREE from 'three';
 import { createCar, updateCar } from './vehicles.js';
 
@@ -15,6 +24,14 @@ const BUST_TIME = 3; // detik sentuh sampai 'busted'
 const RAM_DISTANCE = 3.4; // jarak tabrak polisi -> mobil pemain
 const SPAWN_MIN_DIST = 55; // spawn polisi minimal sejauh ini dari pemain
 const SIREN_INTERVAL = 1.4; // detik antar panggilan onSiren
+
+// --- Roadblock (v3) ---
+const ROADBLOCK_MIN_WANTED = 3; // roadblock aktif mulai wanted 3
+const ROADBLOCK_LEAD_TIME = 2.2; // detik ke depan untuk titik potong
+const ROADBLOCK_LEAD_MIN = 20; // jarak potong minimum dari pemain (unit)
+const ROADBLOCK_LEAD_MAX = 70; // jarak potong maksimum dari pemain (unit)
+const ROADBLOCK_HOLD_DIST = 9; // sudah sampai di titik potong: tahan posisi
+const ROADBLOCK_MIN_SPEED = 4; // pemain dianggap bergerak di atas ini (unit/dtk)
 
 function clamp(v, a, b) {
   return v < a ? a : v > b ? b : v;
@@ -195,6 +212,10 @@ export function createPolice(scene, world, opts = {}) {
   let spawnTimer = 0;
   let sirenTimer = 0;
   let blinkPhase = 0;
+  // v3 (roadblock): estimasi kecepatan pemain dari selisih posisi antar
+  // frame — update() hanya menerima playerPos, tanpa vektor kecepatan.
+  let prevPlayerPos = null;
+  let playerVel = { x: 0, z: 0 };
 
   const onSiren = typeof opts.onSiren === 'function' ? opts.onSiren : null;
   const onBusted = typeof opts.onBusted === 'function' ? opts.onBusted : null;
@@ -278,6 +299,9 @@ export function createPolice(scene, world, opts = {}) {
       // M-6 (v2): state navigasi roadGraph.
       navPath: [], // waypoint {x,z} menuju pemain
       navRepath: 0, // detik sampai hitung ulang jalur
+      // v3: peran roadblock — true bila polisi ini memotong jalan di depan
+      // pemain, false bila mengejar dari belakang seperti biasa.
+      roadblock: false,
     };
     cops.push(cop);
     return cop;
@@ -328,6 +352,35 @@ export function createPolice(scene, world, opts = {}) {
 
     if (!playerPos) return null;
 
+    // --- v3: estimasi kecepatan pemain + titik potong roadblock ---
+    // Kecepatan dihaluskan (lerp) supaya satu frame lompat (mis. reset
+    // posisi) tidak melempar titik potong ke ujung kota; besarnya di-cap
+    // 40 unit/dtk, di atas kecepatan mobil mana pun di game ini.
+    if (dt > 0 && prevPlayerPos) {
+      const rawVx = (playerPos.x - prevPlayerPos.x) / dt;
+      const rawVz = (playerPos.z - prevPlayerPos.z) / dt;
+      playerVel.x += (rawVx - playerVel.x) * 0.35;
+      playerVel.z += (rawVz - playerVel.z) * 0.35;
+      const speed = Math.hypot(playerVel.x, playerVel.z);
+      if (speed > 40) {
+        playerVel.x = (playerVel.x / speed) * 40;
+        playerVel.z = (playerVel.z / speed) * 40;
+      }
+    }
+    prevPlayerPos = { x: playerPos.x, z: playerPos.z };
+    // Titik potong: posisi pemain + arah gerak * jarak tempuh ~2,2 dtk ke
+    // depan (dibatasi 20-70 unit). Pemain diam / pelan -> titik potong =
+    // posisi pemain sendiri, jadi roadblock mendekat seperti pengejar biasa.
+    const playerSpeed = Math.hypot(playerVel.x, playerVel.z);
+    let intercept = { x: playerPos.x, z: playerPos.z };
+    if (wanted >= ROADBLOCK_MIN_WANTED && playerSpeed > ROADBLOCK_MIN_SPEED) {
+      const lead = clamp(playerSpeed * ROADBLOCK_LEAD_TIME, ROADBLOCK_LEAD_MIN, ROADBLOCK_LEAD_MAX);
+      intercept = {
+        x: playerPos.x + (playerVel.x / playerSpeed) * lead,
+        z: playerPos.z + (playerVel.z / playerSpeed) * lead,
+      };
+    }
+
     // --- Bersembunyi: semua polisi >150 unit -> wanted turun 1 per 20 dtk.
     let nearestDist2 = Infinity;
     for (const cop of cops) {
@@ -366,17 +419,33 @@ export function createPolice(scene, world, opts = {}) {
       const dz = playerPos.z - car.pos.z;
       const d = Math.hypot(dx, dz);
 
+      // v3 (roadblock): saat wanted >= 3, polisi berindeks ganjil
+      // memotong jalan ke titik potong di depan pemain; indeks genap tetap
+      // mengejar pemain dari belakang. Peran yang berubah membatalkan
+      // jalur BFS lama supaya polisi langsung menghitung rute ke target
+      // barunya, bukan melanjutkan waypoint ke target lama.
+      const isBlocker = wanted >= ROADBLOCK_MIN_WANTED && i % 2 === 1;
+      if (cop.roadblock !== isBlocker) {
+        cop.roadblock = isBlocker;
+        cop.navPath = [];
+        cop.navRepath = 0;
+      }
+      const targetX = isBlocker ? intercept.x : playerPos.x;
+      const targetZ = isBlocker ? intercept.z : playerPos.z;
+      const dTarget = Math.hypot(targetX - car.pos.x, targetZ - car.pos.z);
+
       // M-6 (v2): navigasi via roadGraph. Dekat (<25 unit) kejar langsung;
       // jauh: ikuti waypoint BFS (hitung ulang tiap 1,5 dtk), lewati
       // waypoint yang sudah dicapai (<10 unit). Tanpa graf, fallback kejar
-      // lurus seperti dulu.
-      let tx = playerPos.x;
-      let tz = playerPos.z;
-      if (d >= 25 && buildNavGraph(worldObj)) {
+      // lurus seperti dulu. Roadblock memakai mesin yang sama, hanya
+      // targetnya titik potong, bukan posisi pemain.
+      let tx = targetX;
+      let tz = targetZ;
+      if (dTarget >= 25 && buildNavGraph(worldObj)) {
         cop.navRepath -= dt;
         if (cop.navRepath <= 0 || cop.navPath.length === 0) {
           const from = nearestNavNode(car.pos.x, car.pos.z);
-          const to = nearestNavNode(playerPos.x, playerPos.z);
+          const to = nearestNavNode(targetX, targetZ);
           cop.navPath = bfsPath(from, to);
           cop.navRepath = 1.5;
         }
@@ -390,7 +459,14 @@ export function createPolice(scene, world, opts = {}) {
           tz = cop.navPath[0].z;
         }
       }
-      const desiredHeading = Math.atan2(tx - car.pos.x, tz - car.pos.z);
+
+      // Roadblock yang sudah sampai di titik potong menahan posisi dan
+      // menghadap ke arah pemain datang — tembok hidup di depan jalan,
+      // bukan pengejar yang lewat begitu saja.
+      const holding = isBlocker && dTarget < ROADBLOCK_HOLD_DIST;
+      const desiredHeading = holding
+        ? Math.atan2(playerPos.x - car.pos.x, playerPos.z - car.pos.z)
+        : Math.atan2(tx - car.pos.x, tz - car.pos.z);
       const turn = clamp(angleDiff(desiredHeading, car.heading), -1, 1);
 
       // Dekat pemain jalan kaki: pelankan supaya bisa "menangkap", dan
@@ -398,8 +474,10 @@ export function createPolice(scene, world, opts = {}) {
       // bisa terakumulasi — bukan lewat begitu saja.
       const veryCloseOnFoot = !playerInCar && d < 5;
       const closeOnFoot = !playerInCar && d < 12;
-      const throttle = veryCloseOnFoot ? 0 : closeOnFoot ? clamp((6 - car.speed) / 6, 0, 1) : 1;
-      updateCar(car, { throttle, steer: turn, brake: veryCloseOnFoot }, dt, worldObj);
+      const throttle = holding || veryCloseOnFoot
+        ? 0
+        : closeOnFoot ? clamp((6 - car.speed) / 6, 0, 1) : 1;
+      updateCar(car, { throttle, steer: turn, brake: holding || veryCloseOnFoot }, dt, worldObj);
 
       // Polisi hancur (health habis karena tabrakan) -> hilang dari jalan.
       if (car.health <= 0) {

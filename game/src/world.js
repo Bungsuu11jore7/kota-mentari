@@ -8,6 +8,12 @@
 // grup three.js plus data yang dipakai lane lain (tabrakan, graf jalan,
 // titik spawn). NOL shadow map di v1, NOL aset/network eksternal:
 // marka jalan digambar lewat CanvasTexture yang dibuat di kode.
+//
+// v3 (Lane B): kota lebih padat — palm, lampu, hydrant, peti, planter dan
+// bangku ditambah terutama di downtown/avenue dan sekitar Pelabuhan /
+// Pasar Lama. Invarian v2 DIPERTAHANKAN PERSIS: logika isBlocked, spawn
+// point, roadGraph, koridor dermaga (z 344-356 / x 396-524), aturan
+// blocking |z|>396, titik kapal (470,350), dan semua nama distrik.
 
 import * as THREE from 'three';
 import {
@@ -261,25 +267,51 @@ export function createWorld(seed) {
     const bench = addBox(COLORS.pierWood, 3, 0.4, 1, x, 0.5, z);
     bench.rotation.y = rotY;
   }
-  // Lane S (v2): taman lebih rimbun — 8 palm (v1: 6).
-  for (let i = 0; i < 8; i += 1) {
+  // Kotak tanaman trotoar: bak kayu + rimbun hijau di atasnya.
+  function addPlanter(x, z) {
+    addBox(COLORS.pierWood, 2.6, 0.9, 1.4, x, 0.45, z);
+    const bush = new THREE.Mesh(crownGeo, mat(COLORS.palmLeaf));
+    bush.scale.set(0.55, 0.3, 0.35);
+    bush.position.set(x, 1.2, z);
+    group.add(bush);
+  }
+  // Lane B (v3): taman lebih rimbun — 14 palm (v2: 8) + 4 bangku (v2: 2).
+  for (let i = 0; i < 14; i += 1) {
     addPalm(-250 + rng.range(-30, 30), 250 + rng.range(-30, 30));
   }
   addBench(-250, 232, 0);
   addBench(-268, 250, Math.PI / 2);
+  addBench(-232, 250, Math.PI / 2);
+  addBench(-250, 268, 0);
 
   // --- palm di sepanjang pantai + beberapa di trotoar. ---
   for (let z = -350; z <= 350; z += 50) {
     addPalm(330 + rng.range(-6, 6), z + rng.range(-10, 10));
     addPalm(372 + rng.range(-6, 6), z + 25 + rng.range(-8, 8));
   }
-  // Lane S (v2): palm trotoar 30 (v1: 18) supaya jalan terasa rindang.
-  for (let i = 0; i < 30; i += 1) {
+  // Lane B (v3): baris tengah pantai — 14 palm lagi di antara dua baris lama.
+  for (let z = -325; z <= 325; z += 50) {
+    addPalm(350 + rng.range(-6, 6), z + rng.range(-8, 8));
+  }
+  // Lane B (v3): palm trotoar acak 55 (v2: 30) supaya jalan terasa rindang.
+  for (let i = 0; i < 55; i += 1) {
     const p = randomRoadPointInternal();
     const px = p.x + rng.pick([-11, 11]);
     const pz = p.z + rng.pick([-11, 11]);
     if (isBlocked(px, pz, 2)) continue;
     addPalm(px, pz);
+  }
+  // Lane B (v3): palm trotoar khusus downtown + Pasar Lama — satu palm di
+  // tiap tengah blok (offset trotoar +-11, dicek isBlocked) di avenue
+  // -300..200, jadi koridor Menara dan Pasar Lama rindang tanpa palm acak
+  // yang menumpuk di satu ruas. 6 avenue x 6 tengah-blok = 36 palm.
+  for (const av of [-300, -200, -100, 0, 100, 200]) {
+    for (let k = 0; k < 6; k += 1) {
+      const mz = -250 + k * 100;
+      const side = k % 2 === 0 ? 11 : -11;
+      if (isBlocked(av + side, mz, 2)) continue;
+      addPalm(av + side, mz);
+    }
   }
 
   // --- lampu jalan di sudut persimpangan (selang-seling). ---
@@ -297,9 +329,21 @@ export function createWorld(seed) {
       addLamp(avenues[ai] + 10, streets[si] + 10);
     }
   }
+  // Lane B (v3): lampu tengah-blok di avenue downtown (-200..200) — satu
+  // lampu per tengah blok supaya avenue Menara terang merata. 5 x 6 = 30.
+  for (const av of [-200, -100, 0, 100, 200]) {
+    for (let k = 0; k < 6; k += 1) {
+      addLamp(av + 10, -250 + k * 100);
+    }
+  }
+  // Lane B (v3): 4 lampu dermaga di tepi dek (z 344, x 415..505) — di luar
+  // jalur jalan kaki tengah dek, menerangi koridor menuju kapal (470,350).
+  for (const lx of [415, 445, 475, 505]) {
+    addLamp(lx, 344);
+  }
 
-  // Lane S (v2): hydrant 16 (v1: 10).
-  for (let i = 0; i < 16; i += 1) {
+  // Lane B (v3): hydrant 30 (v2: 16) — tersebar di trotoar seluruh kota.
+  for (let i = 0; i < 30; i += 1) {
     const p = randomRoadPointInternal();
     const x = p.x + rng.pick([-11, 11]);
     const z = p.z + rng.pick([-11, 11]);
@@ -311,11 +355,41 @@ export function createWorld(seed) {
     hyd.position.set(x, 0.7, z);
     group.add(hyd);
   }
-  // Lane S (v2): peti pelabuhan 12 (v1: 8).
-  for (let i = 0; i < 12; i += 1) {
+  // Lane B (v3): peti 26 (v2: 12) — 14 di gudang pelabuhan (area lama),
+  // 6 di sisi dermaga (z 318-336 / 364-382, DI LUAR koridor z 344-356
+  // supaya jalur ke kapal tetap lega), 6 di Pasar Lama (menjauhi titik
+  // spawn -300,200 dan hideout -250,250).
+  for (let i = 0; i < 14; i += 1) {
     addBox(COLORS.crate, rng.range(2, 3.5), rng.range(2, 3.5), rng.range(2, 3.5),
       250 + rng.range(-30, 30), 1.2, 350 + rng.range(-25, 25));
   }
+  for (let i = 0; i < 6; i += 1) {
+    const cz = i % 2 === 0 ? 318 + rng.range(0, 18) : 364 + rng.range(0, 18);
+    addBox(COLORS.crate, rng.range(2, 3.5), rng.range(2, 3.5), rng.range(2, 3.5),
+      410 + rng.range(0, 90), 1.2, cz);
+  }
+  for (let i = 0; i < 6; i += 1) {
+    const cx = i % 2 === 0 ? -320 + rng.range(0, 40) : -270 + rng.range(0, 40);
+    const cz = i % 2 === 0 ? 120 + rng.range(0, 50) : 272 + rng.range(0, 18);
+    addBox(COLORS.crate, rng.range(2, 3.5), rng.range(2, 3.5), rng.range(2, 3.5),
+      cx, 1.2, cz);
+  }
+  // Lane B (v3): planter trotoar 16 di tengah-blok avenue downtown — bak
+  // kayu + rimbun, dicek isBlocked supaya tidak masuk gedung.
+  for (const av of [-200, -100, 0, 100, 200]) {
+    for (let k = 0; k < 6; k += 1) {
+      if ((av + k) % 2 !== 0) continue;
+      const mz = -250 + k * 100;
+      const side = k % 2 === 0 ? -12 : 12;
+      if (isBlocked(av + side, mz, 2)) continue;
+      addPlanter(av + side, mz);
+    }
+  }
+  // Lane B (v3): 4 bangku tambahan di trotoar downtown (tengah-blok).
+  addBench(-100 + 12, -150, Math.PI / 2);
+  addBench(0 - 12, -50, Math.PI / 2);
+  addBench(100 + 12, 50, Math.PI / 2);
+  addBench(200 - 12, 150, Math.PI / 2);
 
   // --- dermaga pelabuhan: dek kayu menjorok ke laut + satu perahu. ---
   // B-1/m-2 (v2): perahu HARUS di posisi kapal misi 6 (470,350) — tepat di
