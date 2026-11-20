@@ -68,6 +68,10 @@ const missions = createMissions(world, scene, {
   onMessage: (t) => hud.showMessage(t),
 });
 const combat = createCombat(scene);
+// M-2 (v2): damage musuh HARUS mengurangi health pemain. combat.damagePlayer
+// hanya mengurangi combat.playerHealth internal — teruskan ke player.damage()
+// supaya HUD ❤ turun dan health 0 benar-benar game over.
+combat.onPlayerHit = (hp, n) => { player.damage(n); };
 const hud = createHUD();
 const audio = createAudio();
 const input = createInput(canvas);
@@ -81,6 +85,25 @@ const parkedSpots = world.spawn && world.spawn.cars ? world.spawn.cars : [
 for (const spot of parkedSpots) {
   const car = createCar(scene, { color: 0x9aa5b1, x: spot.x, z: spot.z, heading: spot.heading || 0 });
   vehicles.cars.push(car);
+}
+
+// m-1 (v2): SATU mobil target oranye untuk misi 2 "Mobil Pinjaman" —
+// di-spawn di (200,-100) saat misi 2 dimulai, dan dipakai ulang bila misi
+// diulang (dipindah kembali + diperbaiki) supaya tidak menumpuk mobil.
+let targetCar = null;
+function ensureTargetCar() {
+  if (targetCar) {
+    targetCar.pos.set(200, 0, -100);
+    targetCar.heading = 0;
+    targetCar.speed = 0;
+    targetCar.slide = 0;
+    targetCar.health = targetCar.maxHealth || 100;
+    targetCar.group.rotation.y = 0;
+    return targetCar;
+  }
+  targetCar = createCar(scene, { color: 0xff7a00, x: 200, z: -100, heading: 0 });
+  vehicles.cars.push(targetCar);
+  return targetCar;
 }
 
 // --- Save / load ---
@@ -102,6 +125,10 @@ function writeSave(data) {
 
 let save = readSave();
 let missionIndex = save && Number.isInteger(save.mission) ? save.mission : 0;
+// Jangan biarkan save lama / save tamat menunjuk misi di luar range.
+const MISSION_TOTAL = missions.list ? missions.list.length : 6;
+if (missionIndex < 0) missionIndex = 0;
+if (missionIndex > MISSION_TOTAL) missionIndex = MISSION_TOTAL;
 let best = save && typeof save.best === 'number' ? save.best : 0;
 if (save && typeof save.money === 'number') player.money = save.money;
 
@@ -111,7 +138,7 @@ function persist() {
 }
 
 // --- Status layar ---
-let screen = 'title'; // title | play | paused | over | busted | complete
+let screen = 'title'; // title | play | paused | over | busted | complete | finished
 let muted = false;
 const raycaster = new THREE.Raycaster();
 
@@ -157,15 +184,25 @@ function hudState() {
 function startMission(index) {
   missionIndex = index;
   if (missions && typeof missions.start === 'function') missions.start(index);
+  // m-1 (v2): misi 2 butuh mobil target oranye yang jelas di (200,-100).
+  if (index === 1) ensureTargetCar();
   hud.showObjective(currentObjectiveText());
   hud.showMessage(missions.list && missions.list[index] ? missions.list[index].title : 'Misi dimulai');
   announce(`Misi ${index + 1}: ${currentObjectiveText()}`);
+}
+
+function backToTitle() {
+  screen = 'title';
+  save = readSave();
+  hud.setStart(!!save);
+  announce('Kota Mentari. Tekan Enter untuk mulai.');
 }
 
 function newGame() {
   missionIndex = 0;
   player.money = 0;
   player.reset(world.spawn ? world.spawn.player : { x: 0, z: 50 });
+  combat.playerHealth = 100; // sinkron dengan player.health (M-2)
   if (police && typeof police.setWanted === 'function') police.setWanted(0);
   else if (police) police.wanted = 0;
   screen = 'play';
@@ -177,7 +214,16 @@ function newGame() {
 }
 
 function continueGame() {
+  // B-2/M-4 (v2): save dari game yang sudah TAMAT (mission == jumlah misi)
+  // tidak boleh startMission di luar range — tampilkan layar TAMAT.
+  if (missionIndex >= MISSION_TOTAL) {
+    screen = 'finished';
+    hud.showFinished({ money: player.money, completed: MISSION_TOTAL, total: MISSION_TOTAL });
+    announce('Game sudah tamat.');
+    return;
+  }
   player.reset(world.spawn ? world.spawn.player : { x: 0, z: 50 });
+  combat.playerHealth = 100; // sinkron dengan player.health (M-2)
   if (police && typeof police.setWanted === 'function') police.setWanted(0);
   else if (police) police.wanted = 0;
   screen = 'play';
@@ -214,9 +260,22 @@ if (missions) {
     player.addMoney(prize);
     audio.jingle();
     audio.pickup();
+    // M-4 (v2): naikkan missionIndex ke misi BERIKUTNYA (capped di jumlah
+    // misi) SEBELUM persist, supaya Continue lanjut ke misi yang benar
+    // (bukan mengulang misi yang baru selesai).
+    missionIndex = Math.min(index + 1, MISSION_TOTAL);
+    persist();
+    // B-2 (v2): misi terakhir selesai -> layar TAMAT. Enter/tombol di
+    // layar complete lama mengulang misi 6; sekarang tidak ada lagi jalur
+    // yang memanggil startMission(5) setelah tamat.
+    if (index >= MISSION_TOTAL - 1) {
+      screen = 'finished';
+      hud.showFinished({ money: player.money, completed: MISSION_TOTAL, total: MISSION_TOTAL });
+      announce('Tamat! Raka berhasil pulang.');
+      return;
+    }
     hud.showComplete(mission ? mission.title : 'MISI SELESAI', prize);
     screen = 'complete';
-    persist();
     announce(`Misi selesai. Hadiah $${prize}.`);
   };
   missions.onFail = () => {
@@ -234,12 +293,20 @@ hud.handlers.onResume = () => {
 };
 hud.handlers.onRestart = newGame;
 hud.handlers.onNext = () => {
-  const next = Math.min(missionIndex + 1, (missions.list ? missions.list.length : 6) - 1);
+  // M-4 (v2): missionIndex SUDAH menunjuk misi berikutnya (dinaikkan di
+  // onComplete sebelum persist) — jangan +1 lagi, nanti satu misi terlewat.
+  if (missionIndex >= MISSION_TOTAL) {
+    screen = 'finished';
+    hud.showFinished({ money: player.money, completed: MISSION_TOTAL, total: MISSION_TOTAL });
+    return;
+  }
   screen = 'play';
   hud.showScreen('play');
-  startMission(next);
+  startMission(missionIndex);
   persist();
 };
+hud.handlers.onFinishedTitle = backToTitle;
+hud.handlers.onFinishedNew = newGame;
 
 // --- Satu langkah simulasi ---
 function step() {
@@ -283,6 +350,8 @@ function step() {
     missions.update(STEP, {
       playerPos: player.pos,
       playerInCar: player.inCar,
+      playerCar: player.car, // m-1: identitas mobil yang dikendarai
+      targetCar, // m-1: mobil target oranye misi 2 (null di misi lain)
       money: player.money,
       health: player.health,
       wanted: police.wanted || 0,
@@ -352,6 +421,7 @@ function runGame() {
           screen = 'play';
           hud.showScreen('play');
         } else if (screen === 'complete') hud.handlers.onNext();
+        else if (screen === 'finished') backToTitle();
         else if (screen === 'over' || screen === 'busted') newGame();
       } else if (actions.pause && screen === 'paused') {
         screen = 'play';

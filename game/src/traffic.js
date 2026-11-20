@@ -2,6 +2,8 @@
 // Mobil traffic mengikuti roadGraph (loop waypoint, belok di node,
 // berhenti bila ada mobil di depan) + pejalan kaki di trotoar yang
 // menghindar/lari bila mobil pemain dekat. three.js r170, orisinal.
+// (v2, Lane F: sentuh-ulang re-witness rekaman baru 04:06 WIB — logika
+// Lane S tidak diubah.)
 import * as THREE from 'three';
 import { createCar, updateCar } from './vehicles.js';
 
@@ -20,6 +22,11 @@ const SKIN_COLORS = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac];
 const WORLD_HALF = 396;
 const STOP_GAP = 8.5; // jarak berhenti di belakang mobil depan
 const PED_FLEE_RADIUS = 9; // pejalan kaki lari bila pemain sedekat ini
+// Lane S (v2) — kepadatan kota: main.js memanggil createTraffic(..., 14),
+// di sini ditambah jadi 20 mobil + 30 pejalan kaki supaya jalan terasa
+// hidup tapi tetap playable (mobil ikut roadGraph + jaga jarak spawn).
+const DENSITY_BONUS_CARS = 6;
+const PEDS_PER_CAR = 1.5;
 
 function clamp(v, a, b) {
   return v < a ? a : v > b ? b : v;
@@ -143,14 +150,27 @@ export function createTraffic(scene, world, count = 10) {
   const hasGraph = adj.size > 0;
   const nodes = hasGraph ? graph.nodes : [];
 
-  const carCount = Math.max(0, count | 0);
+  const carCount = Math.max(0, (count | 0) + DENSITY_BONUS_CARS);
   for (let i = 0; i < carCount; i += 1) {
     let x = 0;
     let z = 0;
     let node = 0;
     let nextNode = 0;
     if (hasGraph) {
-      node = Math.floor(rng() * nodes.length);
+      // Jaga jarak spawn: coba beberapa node sampai cukup jauh dari mobil
+      // yang sudah ada (hindari tumpukan di satu persimpangan).
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        const cand = Math.floor(rng() * nodes.length);
+        node = cand;
+        let clear = true;
+        for (const other of cars) {
+          if (dist2(nodes[cand].x, nodes[cand].z, other.car.pos.x, other.car.pos.z) < 14 * 14) {
+            clear = false;
+            break;
+          }
+        }
+        if (clear) break;
+      }
       nextNode = pickNextNode(adj, node, -1, rng);
       x = nodes[node].x;
       z = nodes[node].z;
@@ -180,7 +200,8 @@ export function createTraffic(scene, world, count = 10) {
   }
 
   // Pejalan kaki: jalan di trotoar (offset ~6.5 dari garis jalan).
-  const pedCount = Math.max(6, carCount);
+  // Lane S (v2): 30 pejalan kaki (1.5x jumlah mobil, min 12).
+  const pedCount = Math.max(12, Math.round(carCount * PEDS_PER_CAR));
   const avenues = (world && world.roads && world.roads.avenues) || [-300, -200, -100, 0, 100, 200, 300];
   const streets = (world && world.roads && world.roads.streets) || [-300, -200, -100, 0, 100, 200, 300];
   for (let i = 0; i < pedCount; i += 1) {

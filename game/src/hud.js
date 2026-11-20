@@ -51,12 +51,14 @@ export function createHUD() {
   const overlayOver = el('overlay-over', 'div', document.body, 'overlay');
   const overlayBusted = el('overlay-busted', 'div', document.body, 'overlay');
   const overlayComplete = el('overlay-complete', 'div', document.body, 'overlay');
+  const overlayFinished = el('overlay-finished', 'div', document.body, 'overlay');
   const overlays = {
     title: overlayStart,
     paused: overlayPause,
     over: overlayOver,
     busted: overlayBusted,
     complete: overlayComplete,
+    finished: overlayFinished,
     play: null,
   };
   const btnContinue = document.getElementById('btn-continue');
@@ -65,13 +67,19 @@ export function createHUD() {
   const btnRestart = document.getElementById('btn-restart');
   const btnRestartBusted = document.getElementById('btn-restart-busted');
   const btnNextMission = document.getElementById('btn-next-mission');
+  const btnFinishedTitle = document.getElementById('btn-finished-title');
+  const btnFinishedNew = document.getElementById('btn-finished-new');
   const completeTitle = document.getElementById('complete-title');
   const completeReward = document.getElementById('complete-reward');
+  const finishedStats = document.getElementById('finished-stats');
   const overReason = document.getElementById('over-reason');
 
   let messageTimer = 0;
   let roads = null; // { avenues:[x], streets:[z] } dari world, diset main.js via setWorld
-  const handlers = { onNew: null, onContinue: null, onResume: null, onRestart: null, onNext: null };
+  const handlers = {
+    onNew: null, onContinue: null, onResume: null, onRestart: null, onNext: null,
+    onFinishedTitle: null, onFinishedNew: null,
+  };
 
   function showScreen(name) {
     for (const key of Object.keys(overlays)) {
@@ -101,6 +109,21 @@ export function createHUD() {
     if (completeTitle) completeTitle.textContent = title || 'MISI SELESAI';
     if (completeReward) completeReward.textContent = reward ? `Hadiah: $${reward}` : '';
     showScreen('complete');
+  }
+
+  // B-2 (v2): layar TAMAT — ditampilkan sekali setelah misi terakhir selesai.
+  // stats: { money, completed, total }.
+  function showFinished(stats) {
+    const s = stats || {};
+    const done = typeof s.completed === 'number' ? s.completed : 6;
+    const total = typeof s.total === 'number' ? s.total : 6;
+    const money = typeof s.money === 'number' ? s.money : 0;
+    if (finishedStats) {
+      finishedStats.textContent = `Semua ${done} dari ${total} misi selesai. ` +
+        `Raka naik ke kapal terakhir dan meninggalkan Kota Mentari — ` +
+        `uang akhir: $${Math.floor(money)}.`;
+    }
+    showScreen('finished');
   }
 
   function showOver(reason) {
@@ -171,7 +194,15 @@ export function createHUD() {
       const a = state.playerHeading || 0;
       mapCtx.save();
       mapCtx.translate(mx, mz);
-      mapCtx.rotate(Math.atan2(Math.sin(a), -Math.cos(a)) + Math.PI);
+      // M-1 (v2): panah digambar menunjuk (0,-7) = arah -Z canvas (mz naik
+      // searah +Z dunia). Vektor hadap di canvas = (sin a, cos a) karena
+      // mx ~ +X dan mz ~ +Z. Rotasi θ memetakan (0,-1) ke (sin θ, -cos θ);
+      // θ = π - a memberi (sin a, cos a) — tepat searah hadap. Rumus lama
+      // (atan2(sin a, -cos a) + π ≡ -a) memberi (-sin a, -cos a) = 180°
+      // berlawanan. Verifikasi geometri: a=π (hadap -Z) → θ=0 → ujung
+      // panah di (0,-7) = atas canvas = -Z ✓; a=0 (hadap +Z) → θ=π →
+      // ujung di (0,+7) = bawah canvas = +Z ✓.
+      mapCtx.rotate(Math.PI - a);
       mapCtx.fillStyle = '#ffffff';
       mapCtx.beginPath();
       mapCtx.moveTo(0, -7);
@@ -217,6 +248,8 @@ export function createHUD() {
   if (btnRestart) btnRestart.addEventListener('click', () => handlers.onRestart && handlers.onRestart());
   if (btnRestartBusted) btnRestartBusted.addEventListener('click', () => handlers.onRestart && handlers.onRestart());
   if (btnNextMission) btnNextMission.addEventListener('click', () => handlers.onNext && handlers.onNext());
+  if (btnFinishedTitle) btnFinishedTitle.addEventListener('click', () => handlers.onFinishedTitle && handlers.onFinishedTitle());
+  if (btnFinishedNew) btnFinishedNew.addEventListener('click', () => handlers.onFinishedNew && handlers.onFinishedNew());
 
   return {
     update,
@@ -225,6 +258,7 @@ export function createHUD() {
     showScreen,
     setStart,
     showComplete,
+    showFinished,
     showOver,
     showBusted,
     setWorld,

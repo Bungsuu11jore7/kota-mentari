@@ -215,9 +215,12 @@ export function createCombat(scene) {
   combat.punch = function punch(playerPos, playerHeading) {
     if (!playerPos) return null;
     const heading = typeof playerHeading === 'number' ? playerHeading : 0;
-    // Heading 0 = menghadap -Z (konvensi dunia), maju = (sin h, -cos h) di XZ.
+    // M-3 (v2): vektor depan HARUS sama dengan player.js — maju =
+    // (sin h, cos h). Heading 0 = menghadap +Z (bukan -Z); rumus lama
+    // (sin h, -cos h) membalik depan/belakang sehingga tinju hanya kena
+    // musuh di belakang pemain.
     const fx = Math.sin(heading);
-    const fz = -Math.cos(heading);
+    const fz = Math.cos(heading);
     let best = null;
     let bestD = Infinity;
     for (const e of enemies) {
@@ -300,8 +303,9 @@ export function createCombat(scene) {
       const nx = d > 0.001 ? dx / d : 0;
       const nz = d > 0.001 ? dz / d : 0;
 
-      // Hadap pemain (heading 0 = -Z, jadi atan2(dx, -dz)... disesuaikan:
-      // rotation.y = atan2(dx, dz) membuat sumbu +Z figur menghadap pemain).
+      // Hadap pemain (rotation.y = atan2(dx, dz) membuat sumbu +Z figur
+      // menghadap pemain — konsisten dengan konvensi heading player.js,
+      // maju = (sin h, cos h)).
       e.group.rotation.y = Math.atan2(dx, dz);
 
       if (e.health < ENEMY_FLEE_HEALTH) {

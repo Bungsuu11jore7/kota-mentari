@@ -261,7 +261,8 @@ export function createWorld(seed) {
     const bench = addBox(COLORS.pierWood, 3, 0.4, 1, x, 0.5, z);
     bench.rotation.y = rotY;
   }
-  for (let i = 0; i < 6; i += 1) {
+  // Lane S (v2): taman lebih rimbun — 8 palm (v1: 6).
+  for (let i = 0; i < 8; i += 1) {
     addPalm(-250 + rng.range(-30, 30), 250 + rng.range(-30, 30));
   }
   addBench(-250, 232, 0);
@@ -272,7 +273,8 @@ export function createWorld(seed) {
     addPalm(330 + rng.range(-6, 6), z + rng.range(-10, 10));
     addPalm(372 + rng.range(-6, 6), z + 25 + rng.range(-8, 8));
   }
-  for (let i = 0; i < 18; i += 1) {
+  // Lane S (v2): palm trotoar 30 (v1: 18) supaya jalan terasa rindang.
+  for (let i = 0; i < 30; i += 1) {
     const p = randomRoadPointInternal();
     const px = p.x + rng.pick([-11, 11]);
     const pz = p.z + rng.pick([-11, 11]);
@@ -289,15 +291,15 @@ export function createWorld(seed) {
     head.position.set(x, 7.1, z);
     group.add(head);
   }
+  // Lane S (v2): lampu di SEMUA persimpangan (v1: selang-seling).
   for (let ai = 0; ai < avenues.length; ai += 1) {
     for (let si = 0; si < streets.length; si += 1) {
-      if ((ai + si) % 2 !== 0) continue;
       addLamp(avenues[ai] + 10, streets[si] + 10);
     }
   }
 
-  // --- props: hydrant merah di beberapa sudut, peti di pelabuhan. ---
-  for (let i = 0; i < 10; i += 1) {
+  // Lane S (v2): hydrant 16 (v1: 10).
+  for (let i = 0; i < 16; i += 1) {
     const p = randomRoadPointInternal();
     const x = p.x + rng.pick([-11, 11]);
     const z = p.z + rng.pick([-11, 11]);
@@ -309,17 +311,21 @@ export function createWorld(seed) {
     hyd.position.set(x, 0.7, z);
     group.add(hyd);
   }
-  for (let i = 0; i < 8; i += 1) {
+  // Lane S (v2): peti pelabuhan 12 (v1: 8).
+  for (let i = 0; i < 12; i += 1) {
     addBox(COLORS.crate, rng.range(2, 3.5), rng.range(2, 3.5), rng.range(2, 3.5),
       250 + rng.range(-30, 30), 1.2, 350 + rng.range(-25, 25));
   }
 
   // --- dermaga pelabuhan: dek kayu menjorok ke laut + satu perahu. ---
+  // B-1/m-2 (v2): perahu HARUS di posisi kapal misi 6 (470,350) — tepat di
+  // koridor dermaga yang bisa dicapai pemain. Posisi lama (480,330) tidak
+  // cocok dengan objektif mana pun.
   for (let x = 400; x <= 520; x += 12) {
     addBox(COLORS.pierWood, 11, 0.8, 8, x, 0.4, 350);
   }
-  addBox(COLORS.boatHull, 14, 2.5, 5, 480, 0.4, 330);
-  addBox(COLORS.boatCabin, 6, 2.5, 4, 478, 2.8, 330);
+  addBox(COLORS.boatHull, 14, 2.5, 5, 470, 0.4, 350);
+  addBox(COLORS.boatCabin, 6, 2.5, 4, 468, 2.8, 350);
 
   // --- graf jalan: simpul di tiap persimpangan, sisi ke tetangga. ---
   const nodes = [];

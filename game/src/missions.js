@@ -23,7 +23,11 @@ const REWARDS = [500, 1200, 2000, 3000, 8000, 15000];
 function buildMissions(spawn) {
   const harbor = spawn.harbor || { x: -360, z: 0 };
   const hideout = spawn.hideout || { x: 300, z: 300 };
-  const ship = { x: harbor.x - 20, z: harbor.z + 60 };
+  // B-1 (v2): kapal HARUS di titik yang bisa dicapai jalan kaki — tepat di
+  // koridor dermaga (x 396-524, z 344-356, lihat world.isBlocked). Posisi
+  // lama (harbor.x-20, harbor.z+60) = (450,410) berada di luar batas dunia
+  // yang bisa dilalui (|z|>396), jadi objektif tak pernah tercapai.
+  const ship = { x: harbor.x, z: harbor.z };
 
   return [
     {
@@ -125,7 +129,7 @@ function buildMissions(spawn) {
         { who: 'Mira', line: 'Jangan lewat jalan besar. Tempat persembunyian di Bukit sudah siap.' },
       ],
       objectives: [
-        { text: 'Ambil tas di gudang pelabuhan', pos: { x: harbor.x, z: harbor.z }, radius: 7, type: 'reach' },
+        { text: 'Ambil tas di gudang pelabuhan', pos: { x: harbor.x, z: harbor.z }, radius: 12, type: 'reach' },
         { text: 'Kabur ke tempat persembunyian di Bukit', pos: { x: hideout.x, z: hideout.z }, radius: 8, type: 'deliver' },
       ],
     },
@@ -146,7 +150,7 @@ function buildMissions(spawn) {
       ],
       objectives: [
         { text: 'Hilangkan wanted 5 bintang — bersembunyi sampai polisi pergi', pos: { x: hideout.x, z: hideout.z }, radius: 10, type: 'escape' },
-        { text: 'Capai kapal di pelabuhan — tamat!', pos: { x: ship.x, z: ship.z }, radius: 8, type: 'reach' },
+        { text: 'Capai kapal di pelabuhan — tamat!', pos: { x: ship.x, z: ship.z }, radius: 12, type: 'reach' },
       ],
     },
   ];
@@ -352,8 +356,11 @@ export function createMissions(world, scene, hooks) {
         if (d <= obj.radius && (!obj.requiresCar || ctx.playerInCar)) return advanceObjective();
         break;
       case 'steal':
-        // Curi: sampai di titik DAN sudah masuk ke mobil target.
-        if (d <= obj.radius && ctx.playerInCar) return advanceObjective();
+        // Curi: sampai di titik DAN sudah masuk ke mobil target (oranye).
+        // ctx.targetCar = mobil target misi 2 (di-spawn main.js); bila
+        // tidak ada (mis. save lama), fallback ke mobil apa pun.
+        if (d <= obj.radius && ctx.playerInCar
+          && (!ctx.targetCar || ctx.playerCar === ctx.targetCar)) return advanceObjective();
         break;
       case 'escape':
         // Kabur: selesai saat wanted benar-benar 0 (polisi kehilangan jejak).

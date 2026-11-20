@@ -1,15 +1,15 @@
 // police.js — Polisi "KOTA MENTARI" (gta6-01, Lane B).
 // Wanted 0–5 bintang. Mobil polisi hitam-putih + light bar merah/biru
 // berkedip + sirene (callback). AI kejar pemain, menabrak = damage.
-// Bersembunyi (semua polisi >150 unit selama 20 dtk) = wanted -1.
+// Bersembunyi (semua polisi >100 unit selama 12 dtk) = wanted -1.
 // Polisi menyentuh pemain jalan kaki 3 dtk = 'busted'.
 // three.js r170, orisinal, nol aset/network eksternal.
 import * as THREE from 'three';
 import { createCar, updateCar } from './vehicles.js';
 
 const MAX_WANTED = 5;
-const HIDE_DISTANCE = 150; // jarak aman: semua polisi lebih jauh dari ini
-const HIDE_TIME = 20; // detik bersembunyi sampai wanted turun 1
+const HIDE_DISTANCE = 100; // M-5 (v2): jarak aman 150 -> 100 — kabur harus mungkin
+const HIDE_TIME = 12; // M-5 (v2): bersembunyi 20 dtk -> 12 dtk sampai wanted turun 1
 const BUST_DISTANCE = 3.5; // jarak sentuh polisi -> pemain jalan kaki
 const BUST_TIME = 3; // detik sentuh sampai 'busted'
 const RAM_DISTANCE = 3.4; // jarak tabrak polisi -> mobil pemain
@@ -55,7 +55,78 @@ function pointXZ(p) {
   return null;
 }
 
-// Bangun satu mobil polisi: body hitam, pintu/atap putih, light bar.
+// --- Navigasi roadGraph (M-6, v2) ---
+// Polisi lama mengejar lurus (atan2 ke pemain) tanpa pathfinding, lalu
+// macet di gedung karena updateCar berhenti saat isBlocked. Sekarang polisi
+// mengejar lewat node jalan (BFS di roadGraph, hitung ulang tiap 1,5 dtk),
+// baru kejar langsung bila sudah dekat (<25 unit). Node pinggir (|x|=400
+// atau |z|=400) dikecualikan: isBlocked menolak |x|>396, jadi mobil tak
+// bisa melaju di avenue terluar — graf navigasi memakai grid dalam 7x7.
+let navWorld = null;
+let navAdj = null;
+let navNodes = null;
+
+function buildNavGraph(worldObj) {
+  if (worldObj === navWorld && navAdj) return true;
+  const graph = worldObj && worldObj.roadGraph;
+  if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return false;
+  navWorld = worldObj;
+  navNodes = graph.nodes;
+  navAdj = new Map();
+  for (let i = 0; i < navNodes.length; i += 1) navAdj.set(i, []);
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
+  for (const e of edges) {
+    const a = Array.isArray(e) ? e[0] : e.a;
+    const b = Array.isArray(e) ? e[1] : e.b;
+    if (typeof a !== 'number' || typeof b !== 'number') continue;
+    if (!navAdj.has(a) || !navAdj.has(b)) continue;
+    navAdj.get(a).push(b);
+    navAdj.get(b).push(a);
+  }
+  return true;
+}
+
+function nearestNavNode(x, z) {
+  if (!navNodes) return -1;
+  let best = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < navNodes.length; i += 1) {
+    const n = navNodes[i];
+    if (Math.abs(n.x) > 300 || Math.abs(n.z) > 300) continue; // grid dalam saja
+    const d = (n.x - x) * (n.x - x) + (n.z - z) * (n.z - z);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+// BFS node awal -> node tujuan; kembalikan daftar titik {x,z} (tanpa titik awal).
+function bfsPath(fromIdx, toIdx) {
+  if (fromIdx < 0 || toIdx < 0 || !navAdj) return [];
+  if (fromIdx === toIdx) return [];
+  const prev = new Map([[fromIdx, -1]]);
+  const queue = [fromIdx];
+  while (queue.length > 0) {
+    const cur = queue.shift();
+    if (cur === toIdx) break;
+    for (const nb of navAdj.get(cur) || []) {
+      if (!prev.has(nb)) {
+        prev.set(nb, cur);
+        queue.push(nb);
+      }
+    }
+  }
+  if (!prev.has(toIdx)) return [];
+  const path = [];
+  let cur = toIdx;
+  while (cur !== -1 && cur !== fromIdx) {
+    path.unshift(navNodes[cur]);
+    cur = prev.get(cur);
+  }
+  return path;
+}
 function buildCopCar(scene, x, z, heading) {
   const car = createCar(scene, {
     color: 0x14161c,
@@ -204,6 +275,9 @@ export function createPolice(scene, world, opts = {}) {
       redMat: built.redMat,
       blueMat: built.blueMat,
       ramCooldown: 0,
+      // M-6 (v2): state navigasi roadGraph.
+      navPath: [], // waypoint {x,z} menuju pemain
+      navRepath: 0, // detik sampai hitung ulang jalur
     };
     cops.push(cop);
     return cop;
@@ -278,14 +352,45 @@ export function createPolice(scene, world, opts = {}) {
       const car = cop.car;
       cop.ramCooldown = Math.max(0, cop.ramCooldown - dt);
 
-      // Kecepatan polisi: sedikit di atas mobil pemain di wanted tinggi.
-      car.maxSpeed = playerMax * (1 + 0.04 * wanted) + 1.5;
-      car.accel = 24 + wanted * 1.5;
+      // M-5 (v2): kecepatan polisi DI BAWAH mobil pemain di SEMUA wanted,
+      // supaya kabur selalu mungkin tapi tetap tegang: playerMax-2+0,5*wanted,
+      // di-cap playerMax-1. wanted 2: 33 vs 34; wanted 5: 33 vs 34 (bukan
+      // 34,5 — rumus tanpa cap membuat wanted 5 mustahil kabur). Rumus lama
+      // (playerMax*(1+0,04*wanted)+1,5) SELALU lebih cepat (wanted 2: 38,2).
+      // Ketegangan datang dari jumlah polisi (2+wanted) + akselerasi
+      // mereka yang lebih tinggi, bukan dari kecepatan puncak.
+      car.maxSpeed = Math.min(playerMax - 1, playerMax - 2 + wanted * 0.5);
+      car.accel = 22 + wanted;
 
       const dx = playerPos.x - car.pos.x;
       const dz = playerPos.z - car.pos.z;
       const d = Math.hypot(dx, dz);
-      const desiredHeading = Math.atan2(dx, dz);
+
+      // M-6 (v2): navigasi via roadGraph. Dekat (<25 unit) kejar langsung;
+      // jauh: ikuti waypoint BFS (hitung ulang tiap 1,5 dtk), lewati
+      // waypoint yang sudah dicapai (<10 unit). Tanpa graf, fallback kejar
+      // lurus seperti dulu.
+      let tx = playerPos.x;
+      let tz = playerPos.z;
+      if (d >= 25 && buildNavGraph(worldObj)) {
+        cop.navRepath -= dt;
+        if (cop.navRepath <= 0 || cop.navPath.length === 0) {
+          const from = nearestNavNode(car.pos.x, car.pos.z);
+          const to = nearestNavNode(playerPos.x, playerPos.z);
+          cop.navPath = bfsPath(from, to);
+          cop.navRepath = 1.5;
+        }
+        while (cop.navPath.length > 0) {
+          const wp = cop.navPath[0];
+          if (Math.hypot(wp.x - car.pos.x, wp.z - car.pos.z) < 10) cop.navPath.shift();
+          else break;
+        }
+        if (cop.navPath.length > 0) {
+          tx = cop.navPath[0].x;
+          tz = cop.navPath[0].z;
+        }
+      }
+      const desiredHeading = Math.atan2(tx - car.pos.x, tz - car.pos.z);
       const turn = clamp(angleDiff(desiredHeading, car.heading), -1, 1);
 
       // Dekat pemain jalan kaki: pelankan supaya bisa "menangkap", dan
@@ -302,14 +407,15 @@ export function createPolice(scene, world, opts = {}) {
         continue;
       }
 
-      // Tabrak mobil pemain: damage + wanted naik (sekali per 2 dtk per polisi).
+      // Tabrak mobil pemain: damage saja (M-5 v2: TIDAK BOLEH menaikkan
+      // wanted — tabrakan yang menaikkan wanted membuat kabur mustahil:
+      // makin lama kabur, makin tinggi wanted). Sekali per 2 dtk per polisi.
       if (playerInCar && playerCar && d < RAM_DISTANCE && cop.ramCooldown <= 0) {
         cop.ramCooldown = 2;
         const impact = Math.abs(car.speed) + Math.abs(playerCar.speed);
         const damage = clamp(impact * 0.35, 3, 12);
         playerCar.health = Math.max(0, playerCar.health - damage);
         car.speed *= 0.4;
-        addHeat(0.25);
         if (onRam) {
           try {
             onRam({ damage, cop: car, playerCar });

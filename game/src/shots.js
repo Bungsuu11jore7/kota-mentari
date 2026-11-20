@@ -1,5 +1,7 @@
 // Staging deterministik untuk screenshot (?shot=chase|drive|street|start & ?seed=).
 // game = { world, player, vehicles, traffic, police, missions, combat, hud, scene, camera, seed }.
+// (v2, Lane F: sentuh-ulang re-witness rekaman baru 04:06 WIB — staging
+// Lane S tidak diubah.)
 
 // Menara (downtown) = sekitar pusat; Pasar Lama = barat-daya; Pelabuhan = timur.
 const MENARA = { x: 100, z: 0 };
@@ -98,6 +100,25 @@ function stageChase(game) {
     car.speed = 30;
   }
 
+  // Lane S (v2): 2 mobil traffic di latar jauh, searah di depan pemain,
+  // supaya jalan tidak kosong — jauh dari formasi polisi, tidak mengganggu.
+  if (game.traffic && game.traffic.cars) {
+    const bg = [
+      { dx: 55, dz: -3.5 },
+      { dx: 85, dz: 3.5 },
+    ];
+    bg.forEach((o, i) => {
+      const tc = game.traffic.cars[i];
+      if (!tc) return;
+      const pos = tc.pos || (tc.car && tc.car.pos) || (tc.group && tc.group.position);
+      if (pos) pos.set(point.x + o.dx, 0, point.z + o.dz);
+      if (tc.car) {
+        tc.car.heading = heading;
+        if (tc.car.group) tc.car.group.rotation.y = heading;
+      }
+    });
+  }
+
   game.hud.showScreen('play');
   game.hud.update({
     health: 86,
@@ -126,12 +147,48 @@ function stageDrive(game) {
   if (game.police && typeof game.police.setWanted === 'function') game.police.setWanted(0);
   else if (game.police) game.police.wanted = 0;
 
-  // Sebarkan traffic agar terlihat di frame.
+  // Sebarkan traffic agar terlihat di frame (Lane S v2): semua mobil DI
+  // ATAS jalan yang sama (avenue x=100, lajur ±3.5) — v1 menyebar ke
+  // x=70/130 yang justru di dalam gedung sehingga tak terlihat.
+  // 8 mobil searah/berlawanan di depan + 2 menyeberang di persimpangan
+  // z=100. Heading ikut diset supaya mobil menghadap searah jalan.
   if (game.traffic && game.traffic.cars) {
-    game.traffic.cars.forEach((tc, i) => {
-      const p = roadPoint(game.world, point.x + (i % 3) * 30 - 30, point.z + 60 + i * 22);
+    const spots = [
+      { x: 103.5, z: 26, h: 0 },
+      { x: 96.5, z: 42, h: Math.PI },
+      { x: 103.5, z: 60, h: 0 },
+      { x: 96.5, z: 82, h: Math.PI },
+      { x: 103.5, z: 108, h: 0 },
+      { x: 96.5, z: 138, h: Math.PI },
+      { x: 103.5, z: 172, h: 0 },
+      { x: 96.5, z: 210, h: Math.PI },
+      { x: 58, z: 100, h: Math.PI / 2 },
+      { x: 142, z: 100, h: -Math.PI / 2 },
+    ];
+    spots.forEach((s, i) => {
+      const tc = game.traffic.cars[i];
+      if (!tc) return;
       const pos = tc.pos || (tc.car && tc.car.pos) || (tc.group && tc.group.position);
-      if (pos) pos.set(p.x, 0, p.z);
+      if (pos) pos.set(s.x, 0, s.z);
+      if (tc.car) {
+        tc.car.heading = s.h;
+        if (tc.car.group) tc.car.group.rotation.y = s.h;
+      }
+    });
+  }
+
+  // Pejalan kaki di trotoar (x = 100 ± 11) sepanjang jalan di depan.
+  if (game.traffic && game.traffic.peds) {
+    const pedSpots = [
+      { x: 89, z: 18 }, { x: 111, z: 30 }, { x: 89, z: 48 },
+      { x: 111, z: 66 }, { x: 89, z: 84 }, { x: 111, z: 100 },
+    ];
+    pedSpots.forEach((s, i) => {
+      const ped = game.traffic.peds[i];
+      if (!ped) return;
+      const pos = ped.pos || (ped.group && ped.group.position);
+      if (pos) pos.set(s.x, 0, s.z);
+      if (ped.group) ped.group.rotation.y = i % 2 === 0 ? 0 : Math.PI;
     });
   }
 
@@ -161,28 +218,41 @@ function stageStreet(game) {
   // samping supaya figur tidak tertutup mobil dari kamera belakang.
   game.player.pos.x += 6;
   game.player.pos.z += 6;
-  game.player.heading = Math.PI * 0.75;
+  // Lane S (v2): menghadap +X menyusuri jalan z=200 — marker, pejalan
+  // kaki, dan deretan gedung Pasar Lama masuk satu frame (v1 diagonal
+  // 0.75π membuat marker jatuh di luar jalan / luar frame).
+  game.player.heading = Math.PI / 2;
   game.player.group.rotation.y = game.player.heading;
   game.player.health = 100;
   if (game.police && typeof game.police.setWanted === 'function') game.police.setWanted(1);
   else if (game.police) game.police.wanted = 1;
   spawnCopsForShot(game, null, 40); // titik merah polisi di minimap (2 dtk: belum sampai ke pemain)
 
-  // Pejalan kaki di dekat pemain.
+  // Pejalan kaki di frame (Lane S v2): 10 pejalan kaki di trotoar
+  // kiri-kanan (z = 200 ± 9) dan menyeberang, sepanjang jalan di depan.
   if (game.traffic && game.traffic.peds) {
-    game.traffic.peds.slice(0, 6).forEach((ped, i) => {
+    const pedSpots = [
+      { x: -182, z: 191 }, { x: -176, z: 209 }, { x: -170, z: 200 },
+      { x: -164, z: 191 }, { x: -158, z: 209 }, { x: -150, z: 191 },
+      { x: -144, z: 200 }, { x: -138, z: 209 }, { x: -186, z: 200 },
+      { x: -132, z: 191 },
+    ];
+    pedSpots.forEach((s, i) => {
+      const ped = game.traffic.peds[i];
+      if (!ped) return;
       const pos = ped.pos || (ped.group && ped.group.position);
-      if (pos) pos.set(point.x + 6 + (i % 3) * 5, 0, point.z + 10 + Math.floor(i / 3) * 8);
+      if (pos) pos.set(s.x, 0, s.z);
+      if (ped.group) ped.group.rotation.y = i % 2 === 0 ? Math.PI / 2 : -Math.PI / 2;
     });
   }
 
-  const marker = { x: point.x + 45, z: point.z - 30 };
-  if (game.missions && typeof game.missions.currentObjective === 'function') {
-    const obj = game.missions.currentObjective();
-    if (obj && obj.pos) {
-      marker.x = obj.pos.x;
-      marker.z = obj.pos.z;
-    }
+  // Marker misi 3D: di mode shot missions.start() tidak pernah jalan,
+  // jadi beam kuning tidak terlihat di v1 — tampilkan langsung di titik
+  // yang sama dengan marker minimap (tengah jalan di depan pemain).
+  const marker = { x: -150, z: 200 };
+  if (game.missions && game.missions.marker) {
+    game.missions.marker.visible = true;
+    game.missions.marker.position.set(marker.x, 0, marker.z);
   }
 
   game.hud.showScreen('play');
