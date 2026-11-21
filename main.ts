@@ -1,36 +1,15 @@
-// KOTA MENTARI — entri "Make GTA 6": program penyerah (Node 22, erasable TS).
-// Menyalin game/ + screenshots/ dari samping file ini ke folder output,
-// lalu menulis /output/dossier.json lewat buildDossier dari vendor
-// (vendor tidak diubah). Di luar grader, MAKEFUN_OUTPUT_DIR menggantikan
-// /output:
-//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+// Make GTA 6 — KOTA MENTARI entry program (Node 22, erasable TypeScript).
+// Copies game/ and screenshots/ to the output folder and writes dossier.json
+// with buildDossier from the kit vendor library (vendor/makefun-game.ts).
+import { cpSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { buildDossier } from "./vendor/makefun-game.ts";
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { buildDossier } from './vendor/makefun-game.ts';
+const outDir: string = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
 
-const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) {
-  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
-}
-
-// Batas scorer (reference/gate.json): hanya text_max_bytes yang membentuk
-// byte dossier; batas lain menolak entri yang scorer akan tolak (lebih
-// dari 4 screenshot atau satu di atas 256 KiB; lebih dari 993 file di
-// game/ atau 48 MiB file game, atau path di bawah game/ di atas 1000 byte).
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
-);
+mkdirSync(outDir, { recursive: true });
+cpSync("game", join(outDir, "game"), { recursive: true });
+cpSync("screenshots", join(outDir, "screenshots"), { recursive: true });
+const dossier: Uint8Array = buildDossier(outDir, { text_max_bytes: 163840 });
+writeFileSync(join(outDir, "dossier.json"), dossier);
+console.log("KOTA MENTARI dossier written to " + join(outDir, "dossier.json"));

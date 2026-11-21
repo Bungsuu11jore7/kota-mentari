@@ -1,49 +1,54 @@
-# Kota Mentari — Make GTA 6
+# KOTA MENTARI
 
-[![gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01)
-[![rank](https://make.fun/badge/gta6-01/Bungsuu11jore7/kota-mentari/rank.svg)](https://make.fun/bounty/gta6-01)
-[![reward](https://make.fun/badge/gta6-01/Bungsuu11jore7/kota-mentari/reward.svg)](https://make.fun/bounty/gta6-01)
+[![make.fun](https://img.shields.io/badge/make.fun-gta6--01-blue)](https://make.fun/c/gta6-01)
+[![Prize $1,666](https://img.shields.io/badge/prize-%241%2C666-gold)](https://make.fun/c/gta6-01)
+[![Open World](https://img.shields.io/badge/open--world-3D%20crime-green)](https://make.fun/c/gta6-01)
 
-**Kota Mentari** adalah game open-world crime 3D orisinal di kota pesisir tropis fiktif **Kota Mentari** — matahari terbenam, laut, dan palm di mana-mana. Kamu bermain sebagai **Raka Pratama** (28), kurir biasa yang menerima paket yang salah. Bos **Darma** menginginkan paket itu kembali, **Geng Ombak** menginginkan Raka mati, dan **Mira Santosa**, satu-satunya orang yang masih percaya padanya, menunggu di ujung kota.
+**KOTA MENTARI** — game open-world crime 3D yang berjalan offline di browser desktop,
+dibangun untuk bounty [gta6-01 di make.fun](https://make.fun/c/gta6-01) (total hadiah $1.666,
+100 tempat berbayar, deadline 24 November 2026).
 
-Kota ini hidup: lima distrik (**Menara**, **Pasar Lama**, **Bukit**, **Pesisir**, **Pelabuhan**), jalanan dengan traffic dan pejalan kaki, polisi dengan sistem wanted 0–5 bintang yang mengejar, menabrak, dan menangkapmu, serta dermaga tempat kapal terakhir berlayar saat senja.
+Raka Pratama, 28 tahun, kurir paket di kota pesisir tropis fiktif Kota Mentari.
+Satu paket terakhir mengubah segalanya: Bos Darma dan Geng Ombak memburu Mira Santosa,
+dan hanya Raka yang bisa membawanya pulang.
 
-## Cara bermain
+## Yang ada di dalam game
 
-Jalankan lokal dengan `node serve.ts`, lalu buka http://localhost:8080. Game berjalan penuh offline di browser desktop (three.js sudah di-vendor di `game/vendor/`).
+- Kota pesisir tropis dengan 5 distrik: Pelabuhan, Pasar Lama, Menara, Pesisir, Bukit
+- Jalan kaki dan mengemudi, curi mobil, traffic 28 mobil + 45 pejalan kaki
+- Sistem wanted 0–5 bintang dengan polisi yang merespons, roadblock, dan BUSTED
+- 6 misi berurutan dengan cerita, hadiah kumulatif $500 → $29.700
+- Combat: pukul (F) dan tembak (klik mouse), senjata tinju + pistol
+- HUD lengkap: nyawa, uang, senjata, bintang wanted, kecepatan, minimap, kotak misi, toast
+- Save/load via localStorage, audio WebAudio, musik latar
+- Layar mulai / jeda / TAMAT / BUSTED
+
+## Kontrol
 
 | Tombol | Aksi |
 | --- | --- |
-| WASD | Jalan kaki / mengemudi |
+| WASD | Jalan / mengemudi |
 | Shift | Lari |
 | E | Masuk / keluar / curi mobil |
-| Space | Handbrake (drift) |
+| Space | Rem tangan |
 | F | Pukul |
-| Klik mouse | Tembak pistol |
-| 1 / 2 | Ganti tinju / pistol |
+| Klik mouse | Tembak |
+| 1 / 2 | Tinju / pistol |
 | P / Esc | Jeda |
 | M | Bisu |
+| Enter | Mulai dari layar awal |
 
-Ikuti penanda kuning dan kompas misi di HUD. Minimap di kanan bawah menunjukkan jalan, polisi (merah), dan tujuan misi (kuning). Uang hasil misi tersimpan otomatis (localStorage).
+## Mainkan
 
-## Misi (6)
+```sh
+node serve.ts
+# buka http://localhost:8080
+```
 
-1. **Paket Kilat** — antar 3 paket ke penjuru kota (tutorial). Hadiah $500.
-2. **Mobil Pinjaman** — curi mobil target di Menara, antar ke Bengkel Jaya. Hadiah $1.200.
-3. **Kejar Bayangan** — kabur dari polisi, hilangkan wanted 2 bintang. Hadiah $2.000.
-4. **Tolong Mira** — selamatkan Mira dari 3 anggota Geng Ombak di gang Pasar Lama. Hadiah $3.000.
-5. **Brankas Pelabuhan** — rampok gudang pelabuhan, kabur dengan wanted 4 bintang. Hadiah $8.000.
-6. **Jalan Pulang** — hilangkan wanted 5 bintang dan capai kapal terakhir di pelabuhan. Hadiah $15.000.
+Game murni file statis di `game/` — tanpa build step, tanpa request jaringan.
+`main.ts` (Node 22) menyalin `game/` + `screenshots/` ke folder output dan
+menulis `dossier.json` lewat `buildDossier` dari `vendor/makefun-game.ts`.
 
-Tertangkap polisi = BUSTED. Kesehatan habis = game over. Semua nama, tempat, dan cerita adalah fiksi orisinal.
+## Lisensi
 
-## Struktur
-
-- `game/index.html` — halaman game + HUD DOM + import map three.js
-- `game/src/world.js` — kota 800×800: gedung, jalan, graf jalan, spawn
-- `game/src/vehicles.js`, `game/src/traffic.js`, `game/src/police.js` — mobil, lalu lintas, polisi
-- `game/src/missions.js`, `game/src/combat.js` — misi cerita + combat
-- `game/src/player.js`, `game/src/hud.js`, `game/src/audio.js`, `game/src/input.js`, `game/src/shots.js` — pemain, HUD/minimap, suara sintetis, input, staging screenshot
-- `game/src/config.js`, `game/src/random.js` — konstanta + RNG deterministik
-- `main.ts` — program entri: salin `game/` + `screenshots/` ke `/output`, tulis `dossier.json`
-- `screenshots/` — 4 render asli dari game (cover: kejar-kejaran polisi di Menara)
+MIT — lihat [LICENSE](LICENSE).
