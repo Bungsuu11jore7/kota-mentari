@@ -1,252 +1,123 @@
-// KOTA MENTARI — modul config.
-// Modul ini HANYA berisi nilai (konstanta). Tidak ada logika di sini.
-// Semua angka dan nama mengikuti dokumen desain v4.
+// KOTA MENTARI — satu tempat untuk semua konstanta game.
+// Semua nama, karakter, distrik, dan cerita di game ini orisinal,
+// tanpa nama atau aset dari game komersial mana pun.
+// Bila angka di file ini berbeda dengan dokumen desain, dokumen desain yang menang.
 
-// ---------------------------------------------------------------------------
-// Peta: persegi dari -500 sampai 500 pada sumbu X dan sumbu Z.
-// ---------------------------------------------------------------------------
-export const MAP_MIN = -500;
-export const MAP_MAX = 500;
-export const MAP_SIZE = 1000;
-export const MAP_HALF = 500;
+export const GAME_TITLE = 'KOTA MENTARI';
+export const GAME_SUBTITLE = 'Kota pesisir tropis — enam misi, satu jalan pulang.';
 
-// Batas spawn: pemain dan kendaraan tidak boleh muncul di luar batas ini.
-export const SPAWN_LIMIT = 396;
+// Benih tetap: kota yang dibangun dari benih ini harus identik antar muat.
+export const WORLD_SEED = 7;
 
-// ---------------------------------------------------------------------------
-// Kisi jalan: jalan membujur dan melintang tiap 100 satuan.
-// ---------------------------------------------------------------------------
-export const ROAD_SPACING = 100;
-export const ROAD_LINES = [-400, -300, -200, -100, 0, 100, 200, 300, 400];
-export const ROAD_WIDTH = 14;
-export const SIDEWALK_WIDTH = 4;
+// Kunci penyimpanan lokal untuk save/load.
+export const SAVE_KEY = 'kota-mentari-save-v1';
 
-// ---------------------------------------------------------------------------
-// Distrik (persegi panjang dalam koordinat X dan Z).
-// ---------------------------------------------------------------------------
-export const DISTRICTS = [
-  { name: 'Pelabuhan', xMin: 300, xMax: 500, zMin: 200, zMax: 500 },
-  { name: 'Pasar Lama', xMin: -300, xMax: -100, zMin: -100, zMax: 100 },
-  { name: 'Menara', xMin: -100, xMax: 200, zMin: -400, zMax: -200 },
-  { name: 'Pesisir', xMin: -300, xMax: 300, zMin: 350, zMax: 500 },
-  { name: 'Bukit', xMin: 200, xMax: 500, zMin: -400, zMax: -100 },
-  { name: 'Pusat kota', xMin: -100, xMax: 200, zMin: -100, zMax: 200 },
-];
+// Ukuran dunia (meter). Kota membentang dari -500 sampai +500 di sumbu x dan z.
+export const WORLD_HALF = 500;
+export const WORLD_SIZE = 1000;
 
-export const DISTRICT_PELABUHAN = DISTRICTS[0];
-export const DISTRICT_PASAR_LAMA = DISTRICTS[1];
-export const DISTRICT_MENARA = DISTRICTS[2];
-export const DISTRICT_PESISIR = DISTRICTS[3];
-export const DISTRICT_BUKIT = DISTRICTS[4];
-export const DISTRICT_PUSAT_KOTA = DISTRICTS[5];
+// Kecepatan dalam meter per detik. 1 m/detik = 3,6 km/jam.
+export const MS_TO_KMH = 3.6;
+export const WALK_SPEED = 5;
+export const RUN_SPEED = 9;
+export const CAR_TOP_SPEED = 42;
+export const CAR_ACCEL = 14;
+export const CAR_BRAKE = 30;
+export const CAR_REVERSE_SPEED = 12;
 
-// ---------------------------------------------------------------------------
-// Kapal (misi 6 "Jalan Pulang") dan koridor dermaga.
-// ---------------------------------------------------------------------------
-export const SHIP_X = 470;
-export const SHIP_Z = 350;
-export const SHIP_POS = { x: 470, z: 350 };
-export const SHIP_RADIUS = 12;
+// Jarak pemicu (meter).
+export const DELIVERY_RADIUS = 12;
+export const MARKER_RADIUS = 12;
+export const PICKUP_RADIUS = 6;
+export const ENTER_CAR_RADIUS = 6;
+export const PUNCH_RANGE = 2.2;
+export const SHOOT_RANGE = 60;
 
-// ---------------------------------------------------------------------------
-// Misi: hadiah berurutan (total 29700).
-// ---------------------------------------------------------------------------
+// Sistem wanted: 0 sampai 5 bintang.
+export const MAX_WANTED = 5;
+export const WANTED_STAR_CAR_THEFT = 2;
+export const WANTED_STAR_ATTACK = 1;
+export const WANTED_STAR_SHOOT_NEAR_POLICE = 1;
+// Wanted meluruh satu bintang bila pemain bersembunyi cukup lama dari polisi.
+export const WANTED_DECAY_HIDE_SECONDS = 20;
+export const WANTED_DECAY_PER_SECOND = 0.05;
+// Wanted 5 memicu 6 unit polisi + 1 roadblock.
+export const WANTED_FIVE_UNITS = 6;
+export const WANTED_FIVE_ROADBLOCKS = 1;
+
+// Hadiah misi (satuan uang game), berurutan misi 1 sampai 6.
+// Kumulatif: 500, 1.700, 3.700, 6.700, 14.700, 29.700.
 export const MISSION_REWARDS = [500, 1200, 2000, 3000, 8000, 15000];
 export const TOTAL_REWARD = 29700;
-export const MISSION_COUNT = 6;
 
-// ---------------------------------------------------------------------------
-// Pemain.
-// ---------------------------------------------------------------------------
-export const PLAYER_HEALTH = 100;
-export const PLAYER_MAX_HEALTH = 100;
-export const WALK_SPEED = 6;
-export const RUN_SPEED = 10;
+export const MISSION_NAMES = [
+  'Paket Kilat',
+  'Mobil Pinjaman',
+  'Kejar Bayangan',
+  'Tolong Mira',
+  'Brankas Pelabuhan',
+  'Jalan Pulang',
+];
 
-// ---------------------------------------------------------------------------
-// Kendaraan.
-// ---------------------------------------------------------------------------
-export const CAR_MAX_SPEED = 30;
-export const POLICE_MAX_SPEED = 32;
+export const MISSION_OBJECTIVES = [
+  'Antar 3 paket ke penanda kuning di Menara',
+  'Bawa mobil oranye ke Pesisir',
+  'Kejar target sampai ke Pesisir',
+  'Selamatkan Mira dari 3 penyerang',
+  'Ambil brankas di Pelabuhan',
+  'Kabur ke kapal di ujung dermaga',
+];
 
-// Kecepatan dalam kilometer per jam yang tampil di HUD:
-// 30 satuan per detik sama dengan 108 kilometer per jam.
-export const SPEED_KMH_FACTOR = 3.6;
+// Koordinat kunci misi (x, z).
+export const MISSION_TARGETS = {
+  // Misi 1: titik antar paket di Menara (tiga paket, titik yang sama).
+  packageDrop: { x: 100, z: -300 },
+  // Misi 2: mobil oranye ter-spawn di sini, diantar ke Pesisir.
+  missionCar: { x: 100, z: 0 },
+  missionCarColor: 'orange',
+  missionCarDestination: { x: 0, z: 400 },
+  // Misi 3: target kejar melarikan diri menuju Pesisir.
+  chaseDestination: { x: 0, z: 400 },
+  // Misi 4: Mira diserang 3 penyerang di sini.
+  miraRescue: { x: -200, z: 100 },
+  miraAttackers: 3,
+  // Misi 5: brankas di Pelabuhan.
+  safeSpot: { x: 400, z: 300 },
+  // Misi 6: kapal kabur di ujung dermaga.
+  shipSpot: { x: 470, z: 350 },
+};
 
-// ---------------------------------------------------------------------------
-// Populasi traffic.
-// ---------------------------------------------------------------------------
+// Distrik kota.
+export const DISTRICTS = ['Pelabuhan', 'Pasar Lama', 'Menara', 'Pesisir', 'Bukit'];
+
+// Jumlah traffic dan pejalan kaki aktif.
 export const TRAFFIC_CAR_COUNT = 28;
 export const PEDESTRIAN_COUNT = 45;
 
-// ---------------------------------------------------------------------------
-// Wanted (0 sampai 5 bintang).
-// ---------------------------------------------------------------------------
-export const MAX_WANTED = 5;
-export const MIN_WANTED = 0;
-export const POLICE_SPAWN_MIN_WANTED = 1;
-export const ROADBLOCK_MIN_WANTED = 3;
-export const POLICE_REPATH_INTERVAL = 1.5;
-export const POLICE_CHASE_DIRECT_DISTANCE = 25;
-export const MISSION_6_START_WANTED = 3;
+// Graf jalan kota.
+export const ROAD_NODE_COUNT = 81;
+export const ROAD_EDGE_COUNT = 144;
 
-// ---------------------------------------------------------------------------
-// Penyimpanan lokal.
-// ---------------------------------------------------------------------------
-export const SAVE_KEY = 'kota-mentari-save';
+// Posisi awal pemain.
+export const PLAYER_START = { x: 0, z: 0, heading: 0 };
+export const PLAYER_START_MONEY = 0;
+export const PLAYER_MAX_HEALTH = 100;
 
-// ---------------------------------------------------------------------------
-// Benih acak permainan (dipakai kota, traffic, dan foto agar deterministik).
-// ---------------------------------------------------------------------------
-export const SEED = 7;
-export const RANDOM_SEED = 7;
+// Warna identitas (hex tiga.js).
+export const PLAYER_SHIRT_COLOR = 0xff7a1a;
+export const PLAYER_CAR_COLOR = 0xff8c1a;
+export const POLICE_CAR_COLOR = 0xffffff;
+export const MARKER_COLOR = 0xffd21f;
 
-// ---------------------------------------------------------------------------
-// Foto: lebar 1280, tinggi 720, kualitas JPEG 82, tiap berkas maks 256 KiB.
-// ---------------------------------------------------------------------------
-export const SCREENSHOT_WIDTH = 1280;
-export const SCREENSHOT_HEIGHT = 720;
-export const SCREENSHOT_QUALITY = 82;
-export const SCREENSHOT_MAX_KIB = 256;
+// Kamera kejar: jarak dan tinggi relatif terhadap pemain/mobil.
+export const CAMERA_CHASE_DISTANCE = 10;
+export const CAMERA_CHASE_HEIGHT = 4.5;
+export const CAMERA_STREET_DISTANCE = 4.5;
+export const CAMERA_STREET_HEIGHT = 1.7;
 
-// ---------------------------------------------------------------------------
-// Palet warna.
-// ---------------------------------------------------------------------------
-export const COLOR_BUILDINGS = [
-  0xff8c42, 0xf7e6c4, 0x9b7ede, 0x8b5a2b, 0x9aa0a6,
-];
-export const BUILDING_COLORS = COLOR_BUILDINGS;
+// Kecepatan gerak penyerang misi 4 (unit per detik, digerakkan loop utama saja).
+export const ATTACKER_SPEED = 3.2;
 
-export const COLOR_ROAD = 0x2b2b30;
-export const ROAD_COLOR = COLOR_ROAD;
-
-export const COLOR_SIDEWALK = 0x8d8578;
-export const SIDEWALK_COLOR = COLOR_SIDEWALK;
-
-export const COLOR_GRASS = 0x4d8a3f;
-export const GRASS_COLOR = COLOR_GRASS;
-
-export const COLOR_SEA = 0x1f6fb2;
-export const SEA_COLOR = COLOR_SEA;
-
-export const COLOR_SKY_SUNSET = 0xff7e2e;
-export const SKY_SUNSET_COLOR = COLOR_SKY_SUNSET;
-export const COLOR_SKY = 0xff9a3d;
-export const SKY_COLOR = COLOR_SKY;
-
-export const COLOR_CARS = [
-  0x2563eb, 0x16a34a, 0xeab308, 0xf5f5f5, 0x111111,
-];
-export const CAR_COLORS = COLOR_CARS;
-
-export const COLOR_POLICE_BODY = 0xf5f5f5;
-export const COLOR_POLICE_DOOR = 0x111111;
-export const COLOR_POLICE_LIGHT_RED = 0xff0000;
-export const COLOR_POLICE_LIGHT_BLUE = 0x0000ff;
-export const POLICE_COLORS = [
-  COLOR_POLICE_BODY, COLOR_POLICE_DOOR,
-  COLOR_POLICE_LIGHT_RED, COLOR_POLICE_LIGHT_BLUE,
-];
-
-export const COLOR_PLAYER_SHIRT = 0xff7a1a;
-export const COLOR_PLAYER_PANTS = 0x23232a;
-export const PLAYER_COLORS = [COLOR_PLAYER_SHIRT, COLOR_PLAYER_PANTS];
-export const PLAYER_SHIRT_COLOR = COLOR_PLAYER_SHIRT;
-export const PLAYER_PANTS_COLOR = COLOR_PLAYER_PANTS;
-
-export const COLOR_PEDESTRIANS = [
-  0xe74c3c, 0x3498db, 0x2ecc71, 0xf1c40f, 0x9b59b6, 0xecf0f1,
-];
-export const PEDESTRIAN_COLORS = COLOR_PEDESTRIANS;
-
-export const COLOR_TARGET_CAR = 0xff7a1a;
-export const TARGET_CAR_COLOR = COLOR_TARGET_CAR;
-
-export const COLOR_MISSION_MARKER = 0xffd700;
-export const MISSION_MARKER_COLOR = COLOR_MISSION_MARKER;
-
-export const COLOR_SUN = 0xffb347;
-export const SUN_COLOR = COLOR_SUN;
-
-// ---------------------------------------------------------------------------
-// Agregat: semua konstanta dalam satu objek, untuk modul yang butuh sekali
-// impor. Nilai-nilainya sama persis dengan ekspor bernama di atas.
-// ---------------------------------------------------------------------------
-export const CONFIG = {
-  MAP_MIN,
-  MAP_MAX,
-  MAP_SIZE,
-  MAP_HALF,
-  SPAWN_LIMIT,
-  ROAD_SPACING,
-  ROAD_LINES,
-  ROAD_WIDTH,
-  SIDEWALK_WIDTH,
-  DISTRICTS,
-  SHIP_X,
-  SHIP_Z,
-  SHIP_POS,
-  SHIP_RADIUS,
-  MISSION_REWARDS,
-  TOTAL_REWARD,
-  MISSION_COUNT,
-  PLAYER_HEALTH,
-  PLAYER_MAX_HEALTH,
-  WALK_SPEED,
-  RUN_SPEED,
-  CAR_MAX_SPEED,
-  POLICE_MAX_SPEED,
-  SPEED_KMH_FACTOR,
-  TRAFFIC_CAR_COUNT,
-  PEDESTRIAN_COUNT,
-  MAX_WANTED,
-  MIN_WANTED,
-  POLICE_SPAWN_MIN_WANTED,
-  ROADBLOCK_MIN_WANTED,
-  POLICE_REPATH_INTERVAL,
-  POLICE_CHASE_DIRECT_DISTANCE,
-  MISSION_6_START_WANTED,
-  SAVE_KEY,
-  SEED,
-  RANDOM_SEED,
-  SCREENSHOT_WIDTH,
-  SCREENSHOT_HEIGHT,
-  SCREENSHOT_QUALITY,
-  SCREENSHOT_MAX_KIB,
-  COLOR_BUILDINGS,
-  BUILDING_COLORS,
-  COLOR_ROAD,
-  ROAD_COLOR,
-  COLOR_SIDEWALK,
-  SIDEWALK_COLOR,
-  COLOR_GRASS,
-  GRASS_COLOR,
-  COLOR_SEA,
-  SEA_COLOR,
-  COLOR_SKY_SUNSET,
-  SKY_SUNSET_COLOR,
-  COLOR_SKY,
-  SKY_COLOR,
-  COLOR_CARS,
-  CAR_COLORS,
-  COLOR_POLICE_BODY,
-  COLOR_POLICE_DOOR,
-  COLOR_POLICE_LIGHT_RED,
-  COLOR_POLICE_LIGHT_BLUE,
-  POLICE_COLORS,
-  COLOR_PLAYER_SHIRT,
-  COLOR_PLAYER_PANTS,
-  PLAYER_COLORS,
-  PLAYER_SHIRT_COLOR,
-  PLAYER_PANTS_COLOR,
-  COLOR_PEDESTRIANS,
-  PEDESTRIAN_COLORS,
-  COLOR_TARGET_CAR,
-  TARGET_CAR_COLOR,
-  COLOR_MISSION_MARKER,
-  MISSION_MARKER_COLOR,
-  COLOR_SUN,
-  SUN_COLOR,
-};
-
-export default CONFIG;
+// Jarak pandang polisi untuk pengejaran (meter).
+export const POLICE_CHASE_RANGE = 90;
+export const POLICE_CATCH_DISTANCE = 2.5;
