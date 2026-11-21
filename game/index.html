@@ -1,176 +1,182 @@
 <!DOCTYPE html>
+<!-- KOTA MENTARI — open-world crime 3D, kota pesisir tropis fiktif. -->
+<!-- Semua nama, karakter, dan cerita di game ini orisinal. -->
 <html lang="id">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>KOTA MENTARI</title>
 <style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0; height: 100%; overflow: hidden;
-    background: #0b1520; color: #f5f0e6;
-    font-family: "Segoe UI", Arial, Helvetica, sans-serif;
-  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0e14;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #f2f2f2; }
   #game-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .hidden { display: none !important; }
 
-  .screen {
-    position: fixed; inset: 0; z-index: 10;
-    display: flex; align-items: center; justify-content: center;
-    background: linear-gradient(180deg, rgba(22, 16, 44, 0.86) 0%, rgba(255, 120, 40, 0.45) 52%, rgba(10, 20, 35, 0.9) 100%);
-  }
-  .panel {
-    width: min(620px, 92vw); max-height: 92vh; overflow-y: auto;
-    background: rgba(8, 18, 28, 0.88);
-    border: 1px solid rgba(255, 140, 26, 0.55); border-radius: 14px;
-    padding: 28px 32px; text-align: center;
-    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
-  }
-  .panel h1 { margin: 0 0 4px; font-size: 44px; letter-spacing: 4px; color: #ffb347; }
-  .panel h2 { margin: 0 0 10px; font-size: 40px; letter-spacing: 6px; color: #ffb347; }
-  .tagline { margin: 0 0 14px; font-size: 16px; color: #ffd9a0; font-style: italic; }
-  .story { margin: 0 0 18px; font-size: 15px; line-height: 1.6; color: #efe8d8; text-align: left; }
-  .stats { margin: 0 0 14px; font-size: 17px; font-weight: bold; color: #ffd23f; }
-  .hint { margin: 14px 0 0; font-size: 14px; color: #b9c4cc; }
-  table.controls {
-    margin: 0 auto 20px; border-collapse: collapse;
-    font-size: 14px; text-align: left;
-  }
-  table.controls td { padding: 3px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
-  table.controls td:first-child {
-    font-weight: bold; color: #ffd23f; white-space: nowrap;
-  }
-  .btn-start {
-    display: inline-block; padding: 13px 42px; font-size: 20px; font-weight: bold;
-    color: #1a1206; background: linear-gradient(180deg, #ffc46b, #ff8c1a);
-    border: none; border-radius: 10px; cursor: pointer;
-    box-shadow: 0 4px 0 #b35c00, 0 8px 22px rgba(0, 0, 0, 0.5);
-  }
-  .btn-start:hover { filter: brightness(1.08); }
-  .btn-start:active { transform: translateY(2px); box-shadow: 0 2px 0 #b35c00; }
+  /* ---------- HUD ---------- */
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  .hud-panel { background: rgba(8, 14, 22, 0.62); border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 8px; padding: 8px 12px; backdrop-filter: blur(2px); }
+  #hud-topleft { position: absolute; top: 14px; left: 14px; min-width: 240px; }
+  #hud-topleft .row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+  #hud-topleft .label { font-size: 11px; letter-spacing: 1px; color: #ffd23f;
+    text-transform: uppercase; width: 62px; flex: none; }
+  #health-bar { flex: 1; height: 12px; background: rgba(255,255,255,0.18);
+    border-radius: 6px; overflow: hidden; }
+  #health-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #37d67a, #7be495);
+    border-radius: 6px; transition: width 0.15s linear; }
+  #hud-health-text { font-size: 12px; font-weight: 700; width: 28px; text-align: right; }
+  #hud-money { font-size: 20px; font-weight: 800; color: #7be495; }
+  #hud-weapon { font-size: 13px; font-weight: 700; color: #ffd23f; }
 
-  #hud { position: fixed; inset: 0; z-index: 5; pointer-events: none; display: flex; }
-  .hud-box {
-    position: absolute; background: rgba(8, 18, 28, 0.78);
-    border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 8px;
-    padding: 8px 12px;
-  }
-  #hud-stats { left: 16px; top: 16px; }
-  .hud-row { display: flex; gap: 10px; align-items: baseline; font-size: 15px; }
-  .hud-label { color: #b9c4cc; min-width: 64px; }
-  .hud-value { font-weight: bold; color: #ffffff; }
-  #hud-wanted { color: #ffd23f; letter-spacing: 2px; font-size: 17px; }
-  #hud-objective {
-    left: 50%; top: 14px; transform: translateX(-50%);
-    max-width: 440px; border-left: 4px solid #ffd23f;
-    background: rgba(8, 18, 28, 0.78); border-radius: 6px; padding: 8px 14px;
-  }
-  #hud-objective-title { font-weight: bold; color: #ffb347; font-size: 15px; }
-  #hud-objective-text { font-size: 14px; color: #efe8d8; }
-  #minimap {
-    position: absolute; right: 16px; top: 16px;
-    width: 160px; height: 160px; background: #10222e;
-    border: 2px solid rgba(255, 255, 255, 0.35); border-radius: 8px;
-  }
-  #hud-health-box { left: 16px; bottom: 16px; }
-  #hud-health-track {
-    width: 160px; height: 10px; margin-top: 5px;
-    background: rgba(255, 255, 255, 0.2); border-radius: 5px; overflow: hidden;
-  }
-  #hud-health-bar { height: 100%; width: 100%; background: #37c978; border-radius: 5px; }
-  #hud-speed {
-    position: absolute; right: 20px; bottom: 16px;
-    font-size: 28px; font-weight: bold; color: #ffffff;
-    text-shadow: 0 2px 6px rgba(0, 0, 0, 0.8);
-  }
-  #hud-speed small { font-size: 14px; font-weight: normal; color: #d7dee3; }
+  #hud-topright { position: absolute; top: 14px; right: 14px; text-align: right; }
+  #hud-stars { font-size: 26px; letter-spacing: 3px; line-height: 1; }
+  #hud-stars .star { color: rgba(255,255,255,0.25); }
+  #hud-stars .star.lit { color: #ffd23f; text-shadow: 0 0 8px rgba(255,210,63,0.8); }
 
-  #toast {
-    position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%);
-    z-index: 8; pointer-events: none; max-width: 80vw; text-align: center;
-    background: rgba(10, 20, 30, 0.88); border: 1px solid #ff8c1a; color: #ffe9c4;
-    padding: 10px 18px; border-radius: 8px; font-size: 17px;
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
-  }
+  #hud-bottomright { position: absolute; right: 14px; bottom: 14px; text-align: right; }
+  #hud-speed { font-size: 26px; font-weight: 800; text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
+  #hud-minimap { margin-top: 6px; border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 6px; background: #0a1622; display: block; }
+
+  #mission-box { position: absolute; left: 14px; bottom: 14px; max-width: 340px; }
+  #mission-title { font-size: 15px; font-weight: 800; color: #ffd23f; margin-bottom: 2px; }
+  #mission-objective { font-size: 13px; line-height: 1.4; color: #eef2f5; }
+
+  #toast-container { position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; flex-direction: column; align-items: center; gap: 6px; width: min(560px, 80vw); }
+  .toast { background: #ffd23f; color: #1a1a1a; font-weight: 700; font-size: 15px;
+    padding: 8px 18px; border-radius: 6px; box-shadow: 0 2px 10px rgba(0,0,0,0.45);
+    text-align: center; max-width: 100%; }
+
+  /* ---------- Layar overlay ---------- */
+  .screen { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center;
+    justify-content: center; background: rgba(5, 10, 18, 0.72); backdrop-filter: blur(3px); }
+  .screen-card { width: min(640px, 92vw); max-height: 92vh; overflow-y: auto;
+    background: rgba(10, 18, 28, 0.92); border: 1px solid rgba(255,210,63,0.35);
+    border-radius: 14px; padding: 28px 32px; text-align: center;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.6); }
+  .screen-card h1 { font-size: 44px; letter-spacing: 3px; color: #ffd23f;
+    text-shadow: 0 3px 0 rgba(0,0,0,0.4); margin-bottom: 4px; }
+  .screen-card h1.red { color: #ff3b30; }
+  .screen-card h2 { font-size: 15px; font-weight: 600; color: #9fd8ff; letter-spacing: 2px;
+    text-transform: uppercase; margin-bottom: 16px; }
+  .screen-card p.story { font-size: 15px; line-height: 1.6; color: #e8eef2; margin-bottom: 18px; }
+  .screen-card .controls { text-align: left; margin: 0 auto 18px; max-width: 460px;
+    font-size: 14px; line-height: 1.9; color: #dfe7ec; }
+  .screen-card .controls b { color: #ffd23f; display: inline-block; min-width: 118px; }
+  .btn { pointer-events: auto; display: inline-block; margin: 6px 6px 0; padding: 12px 26px;
+    font-size: 16px; font-weight: 800; letter-spacing: 1px; color: #1a1a1a;
+    background: #ffd23f; border: none; border-radius: 8px; cursor: pointer; }
+  .btn:hover { background: #ffe06e; }
+  .btn.ghost { background: transparent; color: #f2f2f2; border: 2px solid rgba(255,255,255,0.55); }
+  .btn.ghost:hover { border-color: #fff; background: rgba(255,255,255,0.08); }
+  .enter-hint { margin-top: 16px; font-size: 13px; color: #aeb9c2; }
+  #complete-money { font-size: 34px; font-weight: 800; color: #7be495; margin: 6px 0 12px; }
+  #complete-objective { font-size: 15px; color: #ffd23f; font-weight: 700; margin-bottom: 14px; }
+  #complete-minimap { border: 1px solid rgba(255,255,255,0.35); border-radius: 6px;
+    background: #0a1622; margin: 4px auto 14px; display: block; }
+  .screen-card .sub { font-size: 14px; color: #c6d2da; margin-bottom: 10px; }
 </style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
 </head>
 <body>
 <canvas id="game-canvas"></canvas>
 
+<!-- ================= HUD ================= -->
+<div id="hud" class="hidden">
+  <div id="hud-topleft" class="hud-panel">
+    <div class="row">
+      <span class="label">Nyawa</span>
+      <div id="health-bar"><div id="health-fill"></div></div>
+      <span id="hud-health-text">100</span>
+    </div>
+    <div class="row"><span class="label">Uang</span><span id="hud-money">$0</span></div>
+    <div class="row"><span class="label">Senjata</span><span id="hud-weapon">Tinju</span></div>
+  </div>
+
+  <div id="hud-topright" class="hud-panel">
+    <div id="hud-stars"><span class="star">☆</span><span class="star">☆</span><span class="star">☆</span><span class="star">☆</span><span class="star">☆</span></div>
+  </div>
+
+  <div id="hud-bottomright">
+    <div id="hud-speed">0 km/j</div>
+    <canvas id="hud-minimap" width="170" height="170"></canvas>
+  </div>
+
+  <div id="mission-box" class="hud-panel">
+    <div id="mission-title">Misi</div>
+    <div id="mission-objective">Jelajahi Kota Mentari.</div>
+  </div>
+
+  <div id="toast-container"></div>
+</div>
+
+<!-- ================= Layar mulai ================= -->
 <div id="screen-start" class="screen">
-  <div class="panel">
+  <div class="screen-card">
     <h1>KOTA MENTARI</h1>
-    <p class="tagline">Kota pesisir tropis. Satu kurir. Enam misi.</p>
-    <p class="story">Raka Pratama, kurir 28 tahun, dijebak Bos Darma dan Geng Ombak di kotanya
-      sendiri. Mira Santosa menunggunya di ujung kota. Antar paket ke Menara, curi mobil
-      pinjaman, kejar bayangan sampai ke Pesisir, selamatkan Mira, bobol brankas Pelabuhan,
-      lalu kabur ke kapal — dan pulang membawa 29.700.</p>
-    <table class="controls">
-      <tr><td>W A S D</td><td>Jalan / mengemudi</td></tr>
-      <tr><td>Shift</td><td>Lari</td></tr>
-      <tr><td>E</td><td>Masuk / keluar / curi mobil</td></tr>
-      <tr><td>Space</td><td>Handbrake</td></tr>
-      <tr><td>F</td><td>Pukul</td></tr>
-      <tr><td>Klik mouse</td><td>Tembak</td></tr>
-      <tr><td>1 / 2</td><td>Tinju / pistol</td></tr>
-      <tr><td>P atau Esc</td><td>Jeda</td></tr>
-      <tr><td>M</td><td>Bisu</td></tr>
-      <tr><td>Enter</td><td>Mulai</td></tr>
-    </table>
-    <button id="btn-start" class="btn-start" type="button">Mulai Baru</button>
-    <p class="hint">Jelajahi Pelabuhan, Pasar Lama, Menara, Pesisir, dan Bukit. Waspada polisi — lima bintang berarti buronan.</p>
+    <h2>Kota Pesisir &middot; Open World</h2>
+    <p class="story">Raka Pratama, 28 tahun, kurir paket di Kota Mentari. Satu pengiriman
+    yang salah menyeretnya ke perang antara Bos Darma dan Geng Ombak — dan kini
+    Mira Santosa, satu-satunya orang yang masih ia percaya, butuh diselamatkan.
+    Enam misi. Satu kota. Jalan pulang hanya lewat kapal di ujung dermaga.</p>
+    <div class="controls">
+      <div><b>W A S D</b> Jalan / mengemudi</div>
+      <div><b>Shift</b> Lari</div>
+      <div><b>E</b> Masuk / keluar / curi mobil</div>
+      <div><b>Spasi</b> Rem tangan</div>
+      <div><b>F</b> Pukul &nbsp;·&nbsp; <b>Klik</b> Tembak</div>
+      <div><b>1 / 2</b> Tinju / pistol</div>
+      <div><b>P / Esc</b> Jeda &nbsp;·&nbsp; <b>M</b> Bisukan suara</div>
+    </div>
+    <button id="btn-start" class="btn">MULAI BARU</button>
+    <button id="btn-continue" class="btn ghost hidden">LANJUTKAN</button>
+    <div class="enter-hint">Tekan Enter untuk mulai</div>
   </div>
 </div>
 
-<div id="screen-pause" class="screen" style="display: none;">
-  <div class="panel">
-    <h2>JEDA</h2>
-    <p class="story" style="text-align: center;">Game dijeda. Kota menunggu Raka kembali.</p>
-    <p class="hint">Tekan P atau Esc untuk melanjutkan.</p>
+<!-- ================= Layar jeda ================= -->
+<div id="screen-paused" class="screen hidden">
+  <div class="screen-card">
+    <h1>JEDA</h1>
+    <h2>Kota Mentari menunggu</h2>
+    <p class="sub">Permainan dijeda. Progresmu tersimpan otomatis tiap misi selesai.</p>
+    <button id="btn-resume" class="btn">LANJUTKAN</button>
+    <button id="btn-quit-pause" class="btn ghost">KEMBALI KE MENU</button>
   </div>
 </div>
 
-<div id="screen-gameover" class="screen" style="display: none;">
-  <div class="panel">
-    <h2>TAMAT</h2>
-    <p class="story" style="text-align: center;">Raka berhasil kabur ke kapal dan meninggalkan Kota Mentari
-      di belakang — bebas, bersama Mira, dengan brankas Pelabuhan di tangan.</p>
-    <p id="gameover-stats" class="stats"></p>
-    <p class="hint">Tekan Enter untuk main lagi.</p>
+<!-- ================= Layar TAMAT ================= -->
+<div id="screen-complete" class="screen hidden">
+  <div class="screen-card">
+    <h1>TAMAT</h1>
+    <h2>Semua 6 dari 6 misi selesai</h2>
+    <div class="sub">Uang akhir</div>
+    <div id="complete-money">$0</div>
+    <div id="complete-objective">Semua misi selesai!</div>
+    <canvas id="complete-minimap" width="170" height="170"></canvas>
+    <p class="sub">Raka menaiki kapal di ujung dermaga dan meninggalkan Kota Mentari —
+    bersama Mira, dan dengan seluruh kota di belakangnya.</p>
+    <button id="btn-play-again" class="btn">MAIN LAGI</button>
+    <button id="btn-quit-complete" class="btn ghost">KEMBALI KE MENU</button>
   </div>
 </div>
 
-<div id="screen-busted" class="screen" style="display: none;">
-  <div class="panel">
-    <h2>BUSTED</h2>
-    <p class="story" style="text-align: center;">Polisi menangkap Raka. Misi ini harus diulang dari awal.</p>
-    <p id="busted-stats" class="stats"></p>
-    <p class="hint">Tekan Enter untuk mengulang misi.</p>
+<!-- ================= Layar BUSTED ================= -->
+<div id="screen-busted" class="screen hidden">
+  <div class="screen-card">
+    <h1 class="red">BUSTED</h1>
+    <h2>Polisi menangkapmu</h2>
+    <p class="sub">Kejar-kejaran berakhir di sini — tapi misi masih bisa diulang
+    dari titik terakhir.</p>
+    <button id="btn-retry" class="btn">COBA LAGI</button>
+    <button id="btn-quit-busted" class="btn ghost">KEMBALI KE MENU</button>
   </div>
 </div>
 
-<div id="hud" style="display: none;">
-  <div id="hud-stats" class="hud-box">
-    <div class="hud-row"><span class="hud-label">Uang</span><span id="hud-money" class="hud-value">0</span></div>
-    <div class="hud-row"><span class="hud-label">Wanted</span><span id="hud-wanted">☆☆☆☆☆</span></div>
-  </div>
-  <div id="hud-objective">
-    <div id="hud-objective-title">KOTA MENTARI</div>
-    <div id="hud-objective-text">Jelajahi kota, cari penanda misi berikutnya.</div>
-  </div>
-  <canvas id="minimap" width="160" height="160"></canvas>
-  <div id="hud-health-box" class="hud-box">
-    <div class="hud-row"><span class="hud-label">Nyawa</span><span id="hud-health" class="hud-value">100</span></div>
-    <div id="hud-health-track"><div id="hud-health-bar"></div></div>
-  </div>
-  <div id="hud-speed"><span id="hud-speed-value">0</span> <small>km/jam</small></div>
-</div>
-
-<div id="toast" style="display: none;"></div>
-
-<script type="importmap">
-{"imports": {"three": "./vendor/three.module.min.js"}}
-</script>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>
