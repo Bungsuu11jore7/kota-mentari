@@ -1,124 +1,128 @@
-// KOTA MENTARI — input.js
-// Menangkap keyboard + mouse untuk game. Dipanggil SEKALI oleh main.js.
-// Modul ini TIDAK menggerakkan pemain langsung; loop utama membaca status
-// tombol tiap frame lewat getInputState().
+// KOTA MENTARI — modul input: keyboard dan mouse.
+// Satu-satunya modul yang mendaftarkan listener DOM. initInput hanya
+// boleh jalan sekali selama game hidup (dijaga flag initialized).
 
-let inputInitialized = false;
-let inputHandlers = {};
-const heldKeys = new Set();
-const pressedKeys = new Set();
-let mouseHeld = false;
-let mouseClickedFlag = false;
-let mouseX = 0;
-let mouseY = 0;
+const keysDown = {};
+const justPressed = new Set();
+const mouse = { x: 0, y: 0, clicked: false, clickX: 0, clickY: 0, button: 0 };
+let initialized = false;
 
-const PREVENT_DEFAULT_CODES = new Set([
-  'Space',
-  'ArrowUp',
-  'ArrowDown',
-  'ArrowLeft',
-  'ArrowRight',
-  'Tab',
-]);
+function storeKey(code, key) {
+  if (code) keysDown[code] = true;
+  if (key && key.length === 1) keysDown[key.toLowerCase()] = true;
+}
 
-function onKeyDown(event) {
-  if (!event || !event.code) return;
-  if (PREVENT_DEFAULT_CODES.has(event.code)) {
-    event.preventDefault();
-  }
-  heldKeys.add(event.code);
-  if (!event.repeat) {
-    pressedKeys.add(event.code);
-  }
-  if (event.code === 'Enter' && inputHandlers.onStart) {
-    const allow =
-      typeof inputHandlers.isStartScreen !== 'function' ||
-      inputHandlers.isStartScreen();
-    if (allow) {
-      inputHandlers.onStart();
+function dropKey(code, key) {
+  if (code) delete keysDown[code];
+  if (key && key.length === 1) delete keysDown[key.toLowerCase()];
+}
+
+function markPressed(code, key) {
+  if (code) justPressed.add(code);
+  if (key && key.length === 1) justPressed.add(key.toLowerCase());
+}
+
+// Daftarkan semua listener keyboard dan mouse. Aman dipanggil berkali-kali:
+// panggilan kedua dan seterusnya tidak mendaftarkan listener baru.
+export function initInput() {
+  if (initialized) return;
+  initialized = true;
+
+  window.addEventListener('keydown', (event) => {
+    storeKey(event.code, event.key);
+    if (!event.repeat) markPressed(event.code, event.key);
+    if (
+      event.code === 'Space' ||
+      event.code === 'ArrowUp' ||
+      event.code === 'ArrowDown' ||
+      event.code === 'ArrowLeft' ||
+      event.code === 'ArrowRight'
+    ) {
+      event.preventDefault();
     }
-  }
+  });
+
+  window.addEventListener('keyup', (event) => {
+    dropKey(event.code, event.key);
+  });
+
+  window.addEventListener('blur', () => {
+    for (const code of Object.keys(keysDown)) delete keysDown[code];
+  });
+
+  window.addEventListener('mousedown', (event) => {
+    mouse.x = event.clientX;
+    mouse.y = event.clientY;
+    mouse.clickX = event.clientX;
+    mouse.clickY = event.clientY;
+    mouse.button = event.button;
+    mouse.clicked = true;
+    justPressed.add('MouseClick');
+    justPressed.add('Mouse' + event.button);
+  });
+
+  window.addEventListener('mouseup', () => {
+    mouse.clicked = false;
+  });
+
+  window.addEventListener('mousemove', (event) => {
+    mouse.x = event.clientX;
+    mouse.y = event.clientY;
+  });
 }
 
-function onKeyUp(event) {
-  if (!event || !event.code) return;
-  heldKeys.delete(event.code);
+// Apakah input sudah diinisialisasi (untuk smoke test dan debug).
+export function isInputReady() {
+  return initialized;
 }
 
-function onMouseDown(event) {
-  mouseHeld = true;
-  mouseClickedFlag = true;
-  if (event) {
-    mouseX = event.clientX || 0;
-    mouseY = event.clientY || 0;
-  }
-}
-
-function onMouseUp() {
-  mouseHeld = false;
-}
-
-function onBlur() {
-  heldKeys.clear();
-  mouseHeld = false;
-}
-
-function onContextMenu(event) {
-  if (event) event.preventDefault();
-}
-
-export function initInput(handlers) {
-  if (inputInitialized) return getInputState();
-  inputInitialized = true;
-  inputHandlers = handlers || {};
-  if (typeof window !== 'undefined' && window.addEventListener) {
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mouseup', onMouseUp);
-    window.addEventListener('blur', onBlur);
-    window.addEventListener('contextmenu', onContextMenu);
-  }
-  return getInputState();
-}
-
-export function isInputInitialized() {
-  return inputInitialized;
-}
-
+// Apakah tombol sedang ditekan. Terima kode tombol ('KeyW', 'Space',
+// 'ShiftLeft', 'Escape') maupun huruf ('w', 'e').
 export function isKeyDown(code) {
-  return heldKeys.has(code);
+  if (!code) return false;
+  if (keysDown[code]) return true;
+  return !!keysDown[String(code).toLowerCase()];
 }
 
+// Apakah tombol baru saja ditekan sejak frame terakhir dibersihkan.
+// Dipakai untuk aksi sekali tekan: E, F, 1, 2, P, Esc, M, Enter.
+export function isPressed(code) {
+  if (!code) return false;
+  if (justPressed.has(code)) return true;
+  return justPressed.has(String(code).toLowerCase());
+}
+
+// Alias yang dipakai beberapa modul: nama pendek pemeriksa tekan-baru.
 export function wasPressed(code) {
-  return pressedKeys.has(code);
+  return isPressed(code);
 }
 
-export function getInputState() {
-  return {
-    keys: heldKeys,
-    pressed: pressedKeys,
-    mouseDown: mouseHeld,
-    mouseClicked: mouseClickedFlag,
-    mouseX,
-    mouseY,
-    forward: heldKeys.has('KeyW') || heldKeys.has('ArrowUp'),
-    back: heldKeys.has('KeyS') || heldKeys.has('ArrowDown'),
-    left: heldKeys.has('KeyA') || heldKeys.has('ArrowLeft'),
-    right: heldKeys.has('KeyD') || heldKeys.has('ArrowRight'),
-    run: heldKeys.has('ShiftLeft') || heldKeys.has('ShiftRight'),
-    handbrake: heldKeys.has('Space'),
-    interact: pressedKeys.has('KeyE'),
-    punch: pressedKeys.has('KeyF'),
-    pause: pressedKeys.has('KeyP') || pressedKeys.has('Escape'),
-    mute: pressedKeys.has('KeyM'),
-    weaponFists: pressedKeys.has('Digit1'),
-    weaponPistol: pressedKeys.has('Digit2'),
-    enter: pressedKeys.has('Enter'),
-  };
+// Ambil klik mouse terakhir (sekali pakai): kembalikan {x, y, button}
+// atau null bila tidak ada klik baru sejak pemanggilan terakhir.
+export function consumeClick() {
+  if (!mouse.clicked && !justPressed.has('MouseClick')) return null;
+  justPressed.delete('MouseClick');
+  mouse.clicked = false;
+  return { x: mouse.clickX, y: mouse.clickY, button: mouse.button };
 }
 
-export function clearFrameInput() {
-  pressedKeys.clear();
-  mouseClickedFlag = false;
+// Apakah ada klik mouse yang belum dikonsumsi (tanpa mengonsumsinya).
+export function hasClick() {
+  return mouse.clicked || justPressed.has('MouseClick');
 }
+
+// Posisi mouse terakhir (tanpa mengonsumsi klik).
+export function getMouse() {
+  return { x: mouse.x, y: mouse.y, clicked: mouse.clicked };
+}
+
+// Bersihkan semua tekan-baru. Dipanggil loop utama di akhir tiap frame.
+export function clearPressed() {
+  justPressed.clear();
+}
+
+// Peta tombol yang sedang ditekan (baca saja, untuk debug).
+export const keys = keysDown;
+
+// Keadaan mouse (baca saja, untuk debug).
+export const mouseState = mouse;

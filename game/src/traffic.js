@@ -1,289 +1,244 @@
-// traffic.js — Lalu lintas Kota Mentari: 28 mobil + 45 pejalan kaki aktif.
-// Mobil mengikuti graf jalan simpul-ke-simpul; pejalan kaki berjalan di
-// trotoar, menyeberang sesekali, dan menghindar saat mobil pemain mendekat.
-// Jumlah aktif dipertahankan selama bermain (graf tertutup, tidak ada yang
-// keluar kota). Urutan update BEKU (state-first): keadaan, delta waktu,
-// dunia, konteks.
+// KOTA MENTARI — pengelola traffic (Lane B, v9)
+// 28 mobil + 45 pejalan kaki, digerakkan tiap frame.
+// PERBAIKAN WAJIB v9: createTraffic WAJIB menerima world dan scene dan
+// membangun 28 mobil + 45 pejalan kaki NYATA; bila dipanggil tanpa
+// world/scene WAJIB throw — TIDAK BOLEH mengembalikan fallback kosong.
+// PERBAIKAN WAJIB v9: updateTraffic WAJIB melewati mobil stolen === true.
 import * as THREE from '../vendor/three.module.min.js';
-import { createCar, syncCarMesh } from './vehicles.js';
-import { createSeededRng } from './world.js';
+import { createCar, createCarState, CAR_COLORS, TARGET_ORANGE } from './vehicles.js';
+import { findRoadPath, nearestRoad, isBlocked } from './world.js';
 
+// Jumlah traffic aktif (dari dokumen desain 00-design.md).
 export const TRAFFIC_CAR_COUNT = 28;
-export const PEDESTRIAN_COUNT = 45;
+export const TRAFFIC_PED_COUNT = 45;
+export const CAR_COUNT = TRAFFIC_CAR_COUNT;
+export const PED_COUNT = TRAFFIC_PED_COUNT;
 
-const CAR_COLORS = [
-  0xd21f1f, 0x2e6fd8, 0xf2f2e8, 0x3c3c40, 0x27ae60,
-  0xf2c200, 0x8e44ad, 0x16a085, 0x7f8c8d, 0xe67e22,
-];
-const SHIRT_COLORS = [
-  0xe74c3c, 0x3498db, 0xf1c40f, 0x2ecc71, 0x9b59b6,
-  0xfd79a8, 0x00cec9, 0xfdcb6e, 0x6c5ce7, 0xffffff,
-];
-const SKIN_COLORS = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac];
-
-function nodeEdges(world) {
-  const map = new Map();
-  world.roadNodes.forEach((n) => map.set(n.id, []));
-  world.roadEdges.forEach((e, i) => {
-    map.get(e.a).push(i);
-    map.get(e.b).push(i);
-  });
-  return map;
-}
-
-function edgeEnds(world, edgeIdx) {
-  const e = world.roadEdges[edgeIdx];
-  return { a: world.roadNodes[e.a], b: world.roadNodes[e.b] };
-}
-
-// Membuat keadaan traffic. world dari buildCity; scene boleh null
-// (logika saja tanpa mesh — dipakai smoke test).
-export function createTrafficState(world, scene) {
-  const rng = createSeededRng(7);
-  const edgesByNode = nodeEdges(world);
-  const state = {
-    world,
-    cars: [],
-    peds: [],
-    edgesByNode,
-    rng,
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
 
-  for (let i = 0; i < TRAFFIC_CAR_COUNT; i++) {
-    const node = world.roadNodes[Math.floor(rng() * world.roadNodes.length)];
-    const nextId = node.neighbors[Math.floor(rng() * node.neighbors.length)];
-    const next = world.roadNodes[nextId];
-    const maxSpeed = 7 + rng() * 6;
-    const t = rng();
-    const dx = next.x - node.x;
-    const dz = next.z - node.z;
-    const len = Math.hypot(dx, dz);
-    const car = {
-      id: i,
-      node: node.id,
-      next: nextId,
-      t,
-      speed: maxSpeed * (0.5 + rng() * 0.5),
-      maxSpeed,
-      color: CAR_COLORS[Math.floor(rng() * CAR_COLORS.length)],
-      x: node.x + dx * t,
-      z: node.z + dz * t,
-      heading: Math.atan2(dx, dz),
-      mesh: null,
+function inDockCorridor(x, z) {
+  return x >= 370 && x <= 500 && z >= 315 && z <= 385;
+}
+
+// Pembuat state traffic: membangun 28 mobil + 45 pejalan kaki NYATA dan
+// menambahkan semua mesh-nya ke scene. WAJIB dipanggil SETELAH world siap.
+export function createTraffic(world, scene) {
+  if (!world || !scene || typeof scene.add !== 'function') {
+    throw new Error('createTraffic: world dan scene wajib diberikan (KOTA MENTARI)');
+  }
+  if (!Array.isArray(world.nodes) || !Array.isArray(world.roadLines)) {
+    throw new Error('createTraffic: world tidak lengkap (KOTA MENTARI)');
+  }
+  const rng = mulberry32(7);
+  const cars = [];
+  const pedestrians = [];
+
+  // --- 28 mobil di jalan, tersebar (tidak menumpuk di satu titik) ---
+  const usedSpots = [];
+  const farEnough = (x, z) => {
+    for (const s of usedSpots) {
+      if (Math.hypot(x - s.x, z - s.z) < 25) return false;
+    }
+    return true;
+  };
+  let guard = 0;
+  while (cars.length < TRAFFIC_CAR_COUNT && guard < 4000) {
+    guard++;
+    const node = world.nodes[Math.floor(rng() * world.nodes.length)];
+    const along = (rng() - 0.5) * 90;
+    const horizontal = rng() < 0.5;
+    const x = horizontal ? node.x + along : node.x;
+    const z = horizontal ? node.z : node.z + along;
+    if (Math.abs(x) > 396 || Math.abs(z) > 396) continue;
+    if (inDockCorridor(x, z)) continue;
+    if (isBlocked(world, x, z)) continue;
+    if (!farEnough(x, z)) continue;
+    usedSpots.push({ x, z });
+    const color = CAR_COLORS[Math.floor(rng() * CAR_COLORS.length)];
+    const mesh = createCar(color, 'sedan');
+    const heading = horizontal ? (rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2) : rng() < 0.5 ? 0 : Math.PI;
+    mesh.position.set(x, 0, z);
+    mesh.rotation.y = heading;
+    scene.add(mesh);
+    const car = createCarState(mesh, x, z, heading);
+    car.speed = 8 + rng() * 7;
+    car.stolen = false;
+    car.active = true;
+    // Tujuan acak + jalur jalan dari posisi saat ini.
+    const dest = world.nodes[Math.floor(rng() * world.nodes.length)];
+    car.path = findRoadPath(world, x, z, dest.x, dest.z);
+    car.pathIndex = 0;
+    cars.push(car);
+  }
+  if (cars.length !== TRAFFIC_CAR_COUNT) {
+    throw new Error('createTraffic: gagal membangun 28 mobil (KOTA MENTARI)');
+  }
+
+  // --- 45 pejalan kaki di trotoar (offset 9 dari garis jalan) ---
+  const pedColors = [0xe86a4a, 0x4a7de8, 0x4ae87a, 0xe8d84a, 0x9a4ae8, 0xe84a9a, 0x4ad8e8, 0xd8d8d8];
+  const usedPedSpots = [];
+  const pedFarEnough = (x, z) => {
+    for (const s of usedPedSpots) {
+      if (Math.hypot(x - s.x, z - s.z) < 8) return false;
+    }
+    return true;
+  };
+  guard = 0;
+  while (pedestrians.length < TRAFFIC_PED_COUNT && guard < 4000) {
+    guard++;
+    const line = world.roadLines[Math.floor(rng() * world.roadLines.length)];
+    const along = -380 + rng() * 760;
+    const side = rng() < 0.5 ? 9 : -9;
+    const horizontal = rng() < 0.5;
+    const x = horizontal ? along : line + side;
+    const z = horizontal ? line + side : along;
+    if (Math.abs(x) > 396 || Math.abs(z) > 396) continue;
+    if (inDockCorridor(x, z)) continue;
+    if (isBlocked(world, x, z)) continue;
+    if (!pedFarEnough(x, z)) continue;
+    usedPedSpots.push({ x, z });
+
+    const group = new THREE.Group();
+    const shirt = new THREE.MeshLambertMaterial({
+      color: pedColors[Math.floor(rng() * pedColors.length)],
+    });
+    const skin = new THREE.MeshLambertMaterial({ color: 0xd8a878 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.0, 0.32), shirt);
+    body.position.y = 0.85;
+    group.add(body);
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.36, 0.36), skin);
+    head.position.y = 1.55;
+    group.add(head);
+    group.position.set(x, 0, z);
+    scene.add(group);
+
+    const dir = rng() < 0.5 ? 1 : -1;
+    pedestrians.push({
+      mesh: group,
+      x,
+      z,
+      horizontal,
+      line,
+      side,
+      dir,
+      speed: 1.2 + rng() * 0.8,
       active: true,
-    };
-    // Offset lajur kanan (+3.2 dari garis tengah).
-    const px = -dz / len;
-    const pz = dx / len;
-    car.x += px * 3.2;
-    car.z += pz * 3.2;
-    car.meshCar = createCar(car.color, car.x, car.z, car.heading, scene);
-    car.mesh = car.meshCar.mesh;
-    state.cars.push(car);
+    });
+  }
+  if (pedestrians.length !== TRAFFIC_PED_COUNT) {
+    throw new Error('createTraffic: gagal membangun 45 pejalan kaki (KOTA MENTARI)');
   }
 
-  for (let i = 0; i < PEDESTRIAN_COUNT; i++) {
-    const edgeIdx = Math.floor(rng() * world.roadEdges.length);
-    const { a, b } = edgeEnds(world, edgeIdx);
-    const ped = {
-      id: i,
-      edge: edgeIdx,
-      t: rng(),
-      dir: rng() < 0.5 ? 1 : -1,
-      side: rng() < 0.5 ? 1 : -1,
-      speed: 0.8 + rng() * 0.8,
-      x: a.x + (b.x - a.x) * 0.5,
-      z: a.z + (b.z - a.z) * 0.5,
-      heading: 0,
-      state: 'walk',
-      crossT: 0,
-      shirt: SHIRT_COLORS[Math.floor(rng() * SHIRT_COLORS.length)],
-      skin: SKIN_COLORS[Math.floor(rng() * SKIN_COLORS.length)],
-      mesh: null,
-      active: true,
-    };
-    ped.mesh = createPedestrianMesh(ped, scene);
-    state.peds.push(ped);
-  }
-  return state;
+  return { world, scene, cars, pedestrians };
 }
 
-function createPedestrianMesh(ped, scene) {
-  const group = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.26, 0.3, 1.05, 8),
-    new THREE.MeshLambertMaterial({ color: ped.shirt }),
-  );
-  body.position.y = 0.95;
-  group.add(body);
-  const head = new THREE.Mesh(
-    new THREE.SphereGeometry(0.22, 10, 8),
-    new THREE.MeshLambertMaterial({ color: ped.skin }),
-  );
-  head.position.y = 1.68;
-  group.add(head);
-  group.position.set(ped.x, 0, ped.z);
-  if (scene && typeof scene.add === 'function') scene.add(group);
-  return group;
-}
+// Alias pembuat state traffic.
+export const createTrafficState = createTraffic;
+export const buildTraffic = createTraffic;
 
-function updateTrafficCar(state, car, dt, world, ctx) {
-  const from = world.roadNodes[car.node];
-  const to = world.roadNodes[car.next];
-  const dx = to.x - from.x;
-  const dz = to.z - from.z;
-  const len = Math.hypot(dx, dz) || 1;
-  const ux = dx / len;
-  const uz = dz / len;
-
-  // Kecepatan yang diinginkan: melambat bila ada mobil di depan.
-  let desired = car.maxSpeed;
-  for (const other of state.cars) {
-    if (other === car || !other.active) continue;
-    const ox = other.x - car.x;
-    const oz = other.z - car.z;
-    const dist = Math.hypot(ox, oz);
-    if (dist > 14 || dist < 0.01) continue;
-    const ahead = (ox * ux + oz * uz) / dist;
-    if (ahead > 0.6) {
-      if (dist < 6) desired = 0;
-      else desired = Math.min(desired, other.speed);
-    }
-  }
-  // Melambat bila mobil pemain tepat di depan.
-  const player = ctx?.player;
-  if (player && player.inCar) {
-    const ox = player.x - car.x;
-    const oz = player.z - car.z;
-    const dist = Math.hypot(ox, oz);
-    if (dist < 12 && dist > 0.01) {
-      const ahead = (ox * ux + oz * uz) / dist;
-      if (ahead > 0.6) desired = dist < 6 ? 0 : Math.min(desired, 3);
-    }
-  }
-  car.speed += (desired - car.speed) * Math.min(1, 3 * dt);
-
-  car.t += (car.speed * dt) / len;
-  if (car.t >= 1) {
-    // Sampai di simpul: pilih sisi berikutnya (hindari putar balik).
-    const arrived = car.next;
-    const node = world.roadNodes[arrived];
-    const choices = node.neighbors.filter((n) => n !== car.node);
-    const nextId = choices.length > 0
-      ? choices[Math.floor(state.rng() * choices.length)]
-      : node.neighbors[0];
-    car.node = arrived;
-    car.next = nextId;
-    car.t = 0;
-  }
-  const fromNow = world.roadNodes[car.node];
-  const toNow = world.roadNodes[car.next];
-  const ndx = toNow.x - fromNow.x;
-  const ndz = toNow.z - fromNow.z;
-  const nlen = Math.hypot(ndx, ndz) || 1;
-  const px = -ndz / nlen;
-  const pz = ndx / nlen;
-  car.x = fromNow.x + ndx * car.t + px * 3.2;
-  car.z = fromNow.z + ndz * car.t + pz * 3.2;
-  car.heading = Math.atan2(ndx, ndz);
-  if (car.meshCar) {
-    car.meshCar.x = car.x;
-    car.meshCar.z = car.z;
-    car.meshCar.heading = car.heading;
-    car.meshCar.speed = car.speed;
-    car.meshCar.steer = 0;
-    syncCarMesh(car.meshCar);
-  }
-}
-
-function updatePedestrian(state, ped, dt, world, ctx) {
-  const edge = world.roadEdges[ped.edge];
-  const a = world.roadNodes[edge.a];
-  const b = world.roadNodes[edge.b];
-  const dx = b.x - a.x;
-  const dz = b.z - a.z;
-  const len = Math.hypot(dx, dz) || 1;
-  const ux = dx / len;
-  const uz = dz / len;
-  // Trotoar: 10 dari garis tengah jalan.
-  const px = -uz * ped.side * 10;
-  const pz = ux * ped.side * 10;
-
-  if (ped.state === 'cross') {
-    ped.crossT += dt / 2.2;
-    if (ped.crossT >= 1) {
-      ped.crossT = 0;
-      ped.state = 'walk';
-      ped.side = -ped.side;
-    }
-    const s = ped.side * (1 - ped.crossT * 2);
-    ped.x = a.x + dx * ped.t - uz * s * 10;
-    ped.z = a.z + dz * ped.t + ux * s * 10;
-    ped.heading = Math.atan2(-uz * Math.sign(ped.side), ux * Math.sign(ped.side));
-  } else {
-    ped.t += (ped.dir * ped.speed * dt) / len;
-    if (ped.t >= 1 || ped.t <= 0) {
-      // Ujung trotoar: belok ke sisi yang terhubung di simpul itu.
-      const endNode = ped.t >= 1 ? edge.b : edge.a;
-      const options = state.edgesByNode.get(endNode) ?? [];
-      const nextEdge = options.length > 0
-        ? options[Math.floor(state.rng() * options.length)]
-        : ped.edge;
-      const ne = world.roadEdges[nextEdge];
-      ped.edge = nextEdge;
-      if (ne.a === endNode) {
-        ped.t = 0;
-        ped.dir = 1;
-      } else {
-        ped.t = 1;
-        ped.dir = -1;
-      }
-    }
-    // Sesekali menyeberang jalan.
-    if (state.rng() < dt * 0.02) ped.state = 'cross';
-    ped.x = a.x + dx * ped.t + px;
-    ped.z = a.z + dz * ped.t + pz;
-    ped.heading = Math.atan2(ux * ped.dir, uz * ped.dir);
-  }
-
-  // Menghindar saat mobil pemain mendekat.
-  const player = ctx?.player;
-  if (player && player.inCar) {
-    const ox = ped.x - player.x;
-    const oz = ped.z - player.z;
-    const dist = Math.hypot(ox, oz);
-    if (dist < 7 && dist > 0.01) {
-      ped.x += (ox / dist) * 2.8 * dt;
-      ped.z += (oz / dist) * 2.8 * dt;
-      ped.heading = Math.atan2(ox / dist, oz / dist);
-    }
-  }
-  if (ped.mesh) {
-    ped.mesh.position.set(ped.x, 0, ped.z);
-    ped.mesh.rotation.y = ped.heading;
-  }
-}
-
-// Update tiap frame. Urutan BEKU: keadaan, delta waktu, dunia, konteks.
+// Gerakkan semua traffic tiap frame.
+// Tanda tangan state-first: updateTraffic(state, dt, world, ctx).
+// Mobil dengan stolen === true DILEWATI (dikemudikan pemain).
 export function updateTraffic(state, dt, world, ctx) {
-  const step = Math.min(Math.max(dt ?? 0.016, 0), 0.05);
-  const w = world ?? state.world;
+  if (!state || !Array.isArray(state.cars) || !Array.isArray(state.pedestrians)) {
+    throw new Error('updateTraffic: state traffic tidak valid (KOTA MENTARI)');
+  }
+  const w = world || state.world;
+  if (!w) throw new Error('updateTraffic: world wajib tersedia (KOTA MENTARI)');
+  void ctx;
+  const step = typeof dt === 'number' && dt > 0 ? Math.min(dt, 0.1) : 0.016;
+
   for (const car of state.cars) {
-    if (car.active) updateTrafficCar(state, car, step, w, ctx);
+    if (car.stolen === true) continue; // mobil curian dikemudikan pemain
+    if (!car.active) continue;
+    if (!car.path || car.pathIndex >= car.path.length) {
+      // Tujuan baru acak, jalur baru dari posisi saat ini.
+      const dest = w.nodes[Math.floor(Math.random() * w.nodes.length)];
+      car.path = findRoadPath(w, car.x, car.z, dest.x, dest.z);
+      car.pathIndex = 0;
+      if (!car.path || car.path.length === 0) continue;
+    }
+    const target = car.path[car.pathIndex];
+    const dx = target.x - car.x;
+    const dz = target.z - car.z;
+    const dist = Math.hypot(dx, dz);
+    const move = car.speed * step;
+    if (dist <= Math.max(move, 1)) {
+      car.x = target.x;
+      car.z = target.z;
+      car.pathIndex++;
+    } else {
+      car.x += (dx / dist) * move;
+      car.z += (dz / dist) * move;
+      car.heading = Math.atan2(dx, dz);
+    }
+    if (car.mesh) {
+      car.mesh.position.set(car.x, 0, car.z);
+      car.mesh.rotation.y = car.heading;
+    }
   }
-  for (const ped of state.peds) {
-    if (ped.active) updatePedestrian(state, ped, step, w, ctx);
+
+  for (const ped of state.pedestrians) {
+    if (!ped.active) continue;
+    const move = ped.speed * step * ped.dir;
+    if (ped.horizontal) {
+      ped.x += move;
+      if (ped.x > 390 || ped.x < -390) ped.dir *= -1;
+      ped.x = Math.max(-390, Math.min(390, ped.x));
+    } else {
+      ped.z += move;
+      if (ped.z > 390 || ped.z < -390) ped.dir *= -1;
+      ped.z = Math.max(-390, Math.min(390, ped.z));
+    }
+    if (ped.mesh) {
+      ped.mesh.position.set(ped.x, 0, ped.z);
+      // Hadap sesuai arah jalan.
+      ped.mesh.rotation.y = ped.horizontal
+        ? ped.dir > 0 ? Math.PI / 2 : -Math.PI / 2
+        : ped.dir > 0 ? 0 : Math.PI;
+    }
   }
-  return state;
 }
 
-// Daftar mobil / pejalan kaki aktif (untuk HUD, minimap, tabrakan).
-export function getTrafficCars(state) {
-  return state.cars.filter((c) => c.active);
+// Penghitung jumlah aktif.
+export function countActiveCars(state) {
+  if (!state || !Array.isArray(state.cars)) return 0;
+  return state.cars.filter((c) => c.active !== false).length;
 }
-export function getPedestrians(state) {
-  return state.peds.filter((p) => p.active);
+
+export function countActivePedestrians(state) {
+  if (!state || !Array.isArray(state.pedestrians)) return 0;
+  return state.pedestrians.filter((p) => p.active !== false).length;
 }
+
 export function getActiveCounts(state) {
-  return { cars: getTrafficCars(state).length, peds: getPedestrians(state).length };
+  const cars = countActiveCars(state);
+  const pedestrians = countActivePedestrians(state);
+  return { cars, pedestrians, total: cars + pedestrians };
+}
+
+// Alias penghitung.
+export const countActive = getActiveCounts;
+export const getTrafficCounts = getActiveCounts;
+
+// Bantuan: posisi spawn mobil target misi 2 (oranye terang di 100, 0).
+export function spawnTargetCar(world, scene) {
+  if (!world || !scene || typeof scene.add !== 'function') {
+    throw new Error('spawnTargetCar: world dan scene wajib diberikan (KOTA MENTARI)');
+  }
+  const mesh = createCar(TARGET_ORANGE, 'target');
+  mesh.position.set(100, 0, 0);
+  scene.add(mesh);
+  const car = createCarState(mesh, 100, 0, 0);
+  car.speed = 0;
+  return car;
 }

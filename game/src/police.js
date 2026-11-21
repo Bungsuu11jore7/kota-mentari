@@ -1,43 +1,91 @@
-// police.js — Modul polisi "KOTA MENTARI" (GTA6-01 v7, Lane C).
-// Keadaan polisi dibuat sekali oleh loop utama dan diteruskan
-// state-first ke semua fungsi. Wanted 0–5 bintang.
-// TIDAK ADA findRoadPath di file ini: jalur hanya dari world.js
-// (Lane B), diterima lewat konteks bila tersedia.
-// Unit polisi TANPA mesh: daftar ini hanya posisi + sudut + status;
-// loop utama yang menggambar mobil polisi putih + roadblock.
+// KOTA MENTARI — game/src/police.js
+// Sistem wanted 0-5, spawn + pengejaran polisi, roadblock, BUSTED,
+// dan peluruhan wanted saat pemain bersembunyi.
+// Unit polisi TANPA mesh: modul ini TIDAK membuat bentuk 3D apa pun.
+// Loop utama yang menggambar mobil polisi + roadblock dari daftar unit.
+// Semua fungsi menerima keadaan polisi sebagai argumen pertama (state-first).
+// Keadaan dibuat sekali lewat createPoliceState lalu diteruskan tiap panggil.
+// Jalur ditempuh lewat pencari jalur world.js yang diteruskan konteks game
+// sebagai ctx.findPath — modul ini tidak mendefinisikan pencari jalur sendiri.
 
-const WANTED_UNIT_COUNT = [0, 1, 2, 3, 4, 6];
-const HIDE_DISTANCE = 50;
-const HIDE_DECAY_SECONDS = 8;
-const BUSTED_DISTANCE = 4;
-const MAP_BOUND = 470;
+export const MAX_WANTED = 5;
+export const DESIRED_UNITS = [0, 2, 3, 4, 5, 6];
 
-// Offset spawn relatif terhadap pemain (kanan, maju) dalam satuan unit,
-// dipakai berurutan supaya formasi bisa diprediksi (depan/belakang/samping).
-const SPAWN_OFFSETS = [
-  { right: 0, forward: -28 },
-  { right: -14, forward: -24 },
-  { right: 14, forward: -24 },
-  { right: -20, forward: 30 },
-  { right: 20, forward: 30 },
-  { right: -28, forward: 0 },
-  { right: 28, forward: 0 },
-  { right: 0, forward: 34 },
-];
-
-function dist2d(ax, az, bx, bz) {
-  const dx = ax - bx;
-  const dz = az - bz;
-  return Math.sqrt(dx * dx + dz * dz);
-}
+const POLICE_BASE_SPEED = 14;
+const POLICE_MAX_SPEED = 22;
+const POLICE_SPEED_PER_STAR = 1.5;
+const REPATH_INTERVAL = 1.5;
+const DIRECT_CHASE_RADIUS = 25;
+const BUST_RADIUS = 3.5;
+const BUST_PLAYER_MAX_SPEED = 3;
+const COLLISION_RADIUS = 4;
+const COLLISION_DAMAGE = 5;
+const HIT_COOLDOWN = 1;
+const HIDE_DISTANCE = 90;
+const HIDE_TIME_TO_DECAY = 8;
+const SPAWN_DISTANCE = 50;
+const ROADBLOCK_AHEAD = 70;
+const WORLD_BOUND = 480;
+const BUSTED_GRACE = 3;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function clampWanted(n) {
-  const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : 0;
-  return clamp(v, 0, 5);
+function dist(ax, az, bx, bz) {
+  return Math.hypot(ax - bx, az - bz);
+}
+
+function playerPos(ctx) {
+  const p = ctx && ctx.player;
+  if (!p) return null;
+  if (typeof p.x === 'number' && typeof p.z === 'number') return { x: p.x, z: p.z };
+  if (p.position && typeof p.position.x === 'number') return { x: p.position.x, z: p.position.z };
+  if (p.pos && typeof p.pos.x === 'number') return { x: p.pos.x, z: p.pos.z };
+  return null;
+}
+
+function playerSpeed(ctx) {
+  const p = ctx && ctx.player;
+  if (!p) return 0;
+  if (typeof p.speed === 'number') return p.speed;
+  if (typeof p.speedKmh === 'number') return p.speedKmh / 3.6;
+  return 0;
+}
+
+function playerAngle(ctx) {
+  const p = ctx && ctx.player;
+  if (!p) return 0;
+  if (typeof p.angle === 'number') return p.angle;
+  if (typeof p.heading === 'number') return p.heading;
+  return 0;
+}
+
+function toast(ctx, text) {
+  try {
+    if (ctx && typeof ctx.showToast === 'function') ctx.showToast(text);
+  } catch (e) {
+    // Toast bersifat opsional.
+  }
+}
+
+// Minta jalur dari konteks game (pencari jalur world.js). Mencoba dua bentuk
+// argumen yang dipakai konteks, lalu menyerah ke garis lurus bila tidak ada.
+function requestPath(ctx, sx, sz, gx, gz) {
+  if (!ctx || typeof ctx.findPath !== 'function') return null;
+  const attempts = [
+    () => ctx.findPath(sx, sz, gx, gz),
+    () => ctx.findPath(ctx.world, sx, sz, gx, gz),
+  ];
+  for (const attempt of attempts) {
+    try {
+      const path = attempt();
+      if (Array.isArray(path) && path.length > 0) return path;
+    } catch (e) {
+      // Coba bentuk argumen berikutnya.
+    }
+  }
+  return null;
 }
 
 export function createPoliceState() {
@@ -47,136 +95,165 @@ export function createPoliceState() {
     roadblocks: [],
     busted: false,
     hideTimer: 0,
+    repathTimer: 0,
+    spawnCycle: 0,
+    graceTimer: 0,
+    time: 0,
   };
 }
 
 export function getWanted(state) {
-  return state ? state.wanted : 0;
+  if (!state) return 0;
+  return state.wanted || 0;
 }
 
 export function isBusted(state) {
-  return !!state && state.busted === true;
+  if (!state) return false;
+  return state.busted === true;
 }
 
 export function getPoliceUnits(state) {
-  return state ? state.units : [];
+  if (!state) return [];
+  return state.units;
 }
 
 export function getRoadblocks(state) {
-  return state ? state.roadblocks : [];
+  if (!state) return [];
+  return state.roadblocks;
 }
 
 export function clearPolice(state) {
   if (!state) return;
   state.units = [];
   state.roadblocks = [];
+}
+
+export function setWanted(state, level, ctx) {
+  if (!state) return;
+  const clamped = clamp(Math.round(level || 0), 0, MAX_WANTED);
+  state.wanted = clamped;
   state.hideTimer = 0;
-}
-
-export function resetBusted(state) {
-  if (!state) return;
-  state.busted = false;
-}
-
-// Satu unit polisi: posisi + sudut + status saja, tanpa bentuk 3D.
-function makeUnit(x, z, angle) {
-  return {
-    x,
-    z,
-    angle,
-    speed: 0,
-    status: 'chase',
-    path: null,
-    pathIndex: 0,
-    repath: 0,
-  };
-}
-
-// Menempatkan `count` unit pada offset yang DITENTUKAN relatif terhadap
-// pemain (arah maju dari sinus/kosinus sudut pemain), sehingga unit
-// berada dalam pandangan kamera kejar saat staging foto.
-export function spawnPoliceNear(state, countOrCtx, maybeCtx) {
-  if (!state) return [];
-  let count;
-  let ctx;
-  if (typeof countOrCtx === 'number') {
-    count = countOrCtx;
-    ctx = maybeCtx;
-  } else {
-    ctx = countOrCtx;
-    count = WANTED_UNIT_COUNT[state.wanted] - state.units.length;
+  if (clamped === 0) {
+    clearPolice(state);
+    return;
   }
-  const player = ctx && ctx.player;
-  if (!player || count <= 0) return [];
-  const heading = typeof player.angle === 'number' ? player.angle : 0;
-  const fx = Math.sin(heading);
-  const fz = Math.cos(heading);
-  const rx = Math.cos(heading);
-  const rz = -Math.sin(heading);
-  const spawned = [];
-  for (let i = 0; i < count; i += 1) {
-    const off = SPAWN_OFFSETS[(state.units.length + i) % SPAWN_OFFSETS.length];
-    const x = clamp(player.x + fx * off.forward + rx * off.right, -MAP_BOUND, MAP_BOUND);
-    const z = clamp(player.z + fz * off.forward + rz * off.right, -MAP_BOUND, MAP_BOUND);
-    const angle = Math.atan2(player.x - x, player.z - z);
-    const unit = makeUnit(x, z, angle);
-    state.units.push(unit);
-    spawned.push(unit);
+  while (state.units.length > DESIRED_UNITS[clamped]) {
+    state.units.pop();
   }
-  return spawned;
-}
-
-function syncUnits(state, ctx) {
-  if (!state) return;
-  const wanted = clampWanted(state.wanted);
-  const desired = WANTED_UNIT_COUNT[wanted];
-  if (state.units.length < desired) {
-    spawnPoliceNear(state, desired - state.units.length, ctx);
-  } else if (state.units.length > desired) {
-    state.units.length = desired;
-  }
-  // Wanted 5: 1 roadblock di depan pemain. Di bawah 5: tidak ada.
-  if (wanted === 5) {
-    if (state.roadblocks.length === 0 && ctx && ctx.player) {
-      const p = ctx.player;
-      const heading = typeof p.angle === 'number' ? p.angle : 0;
-      state.roadblocks.push({
-        x: clamp(p.x + Math.sin(heading) * 35, -MAP_BOUND, MAP_BOUND),
-        z: clamp(p.z + Math.cos(heading) * 35, -MAP_BOUND, MAP_BOUND),
-        angle: heading,
-        status: 'roadblock',
-      });
-    }
-  } else {
+  if (clamped < 3) {
     state.roadblocks = [];
   }
 }
 
-export function setWanted(state, n, ctx) {
+export function addWanted(state, amount, ctx) {
   if (!state) return;
-  state.wanted = clampWanted(n);
-  if (state.wanted === 0) {
-    state.hideTimer = 0;
+  const before = state.wanted || 0;
+  setWanted(state, before + (amount || 0), ctx);
+  if (state.wanted > before) {
+    toast(ctx, 'Wanted naik ke ' + state.wanted + ' bintang!');
   }
-  if (ctx) syncUnits(state, ctx);
 }
 
-export function addWanted(state, n, ctx) {
-  if (!state) return;
-  setWanted(state, state.wanted + n, ctx);
+export function spawnPoliceNear(state, ctx) {
+  if (!state) return null;
+  const pos = playerPos(ctx);
+  if (!pos) return null;
+  const angle = playerAngle(ctx);
+  // Arah maju: komponen x dari sinus, komponen z dari kosinus.
+  const hx = Math.sin(angle);
+  const hz = Math.cos(angle);
+  // Offset DITENTUKAN relatif terhadap pemain, bergiliran: depan, belakang,
+  // samping kiri, samping kanan — supaya unit masuk pandangan kamera kejar.
+  const cycle = state.spawnCycle % 4;
+  state.spawnCycle += 1;
+  const distance = SPAWN_DISTANCE + (state.spawnCycle % 3) * 5;
+  let ox = 0;
+  let oz = 0;
+  if (cycle === 0) {
+    ox = hx * distance;
+    oz = hz * distance;
+  } else if (cycle === 1) {
+    ox = -hx * distance;
+    oz = -hz * distance;
+  } else if (cycle === 2) {
+    ox = -hz * distance;
+    oz = hx * distance;
+  } else {
+    ox = hz * distance;
+    oz = -hx * distance;
+  }
+  const x = clamp(pos.x + ox, -WORLD_BOUND, WORLD_BOUND);
+  const z = clamp(pos.z + oz, -WORLD_BOUND, WORLD_BOUND);
+  const unit = {
+    x,
+    z,
+    angle: Math.atan2(pos.x - x, pos.z - z),
+    speed: 0,
+    path: null,
+    pathIndex: 0,
+    hitCooldown: 0,
+  };
+  state.units.push(unit);
+  return unit;
 }
 
-// BUSTED: polisi menyentuh pemain (unit dalam jarak tangkap).
-// Bisa terjadi di (0, 0): tidak ada syarat posisi khusus.
+function addRoadblockAhead(state, ctx) {
+  const pos = playerPos(ctx);
+  if (!pos) return;
+  const angle = playerAngle(ctx);
+  const hx = Math.sin(angle);
+  const hz = Math.cos(angle);
+  state.roadblocks.push({
+    x: clamp(pos.x + hx * ROADBLOCK_AHEAD, -WORLD_BOUND, WORLD_BOUND),
+    z: clamp(pos.z + hz * ROADBLOCK_AHEAD, -WORLD_BOUND, WORLD_BOUND),
+    angle,
+  });
+}
+
+function repathUnit(state, unit, ctx) {
+  const pos = playerPos(ctx);
+  if (!pos) return;
+  const path = requestPath(ctx, unit.x, unit.z, pos.x, pos.z);
+  if (path) {
+    unit.path = path;
+    unit.pathIndex = 0;
+  } else {
+    // Tanpa jalur graf jalan: kejar lurus ke pemain.
+    unit.path = [{ x: pos.x, z: pos.z }];
+    unit.pathIndex = 0;
+  }
+}
+
 export function checkBusted(state, ctx) {
-  if (!state || state.busted) return state ? state.busted : false;
+  if (!state) return false;
+  if (state.busted) return true;
+  if (state.graceTimer > 0) return false;
   const player = ctx && ctx.player;
   if (!player) return false;
+  const health = typeof player.health === 'number' ? player.health : 100;
+  if (health <= 0) {
+    state.busted = true;
+    toast(ctx, 'BUSTED! Nyawamu habis.');
+    try {
+      if (ctx && typeof ctx.onBusted === 'function') ctx.onBusted();
+    } catch (e) {
+      // Callback BUSTED bersifat opsional.
+    }
+    return true;
+  }
+  if ((state.wanted || 0) < 1) return false;
+  // BUSTED: polisi menyentuh pemain yang lambat/berhenti saat wanted >= 1.
+  if (playerSpeed(ctx) >= BUST_PLAYER_MAX_SPEED) return false;
+  const pos = playerPos(ctx);
+  if (!pos) return false;
   for (const unit of state.units) {
-    if (dist2d(unit.x, unit.z, player.x, player.z) < BUSTED_DISTANCE) {
+    if (dist(unit.x, unit.z, pos.x, pos.z) < BUST_RADIUS) {
       state.busted = true;
-      if (ctx && typeof ctx.showToast === 'function') {
-        ctx.showToast('BUSTED!');
+      toast(ctx, 'BUSTED! Polisi menangkapmu.');
+      try {
+        if (ctx && typeof ctx.onBusted === 'function') ctx.onBusted();
+      } catch (e) {
+        // Callback BUSTED bersifat opsional.
       }
       return true;
     }
@@ -184,85 +261,132 @@ export function checkBusted(state, ctx) {
   return false;
 }
 
-function moveUnitToward(unit, tx, tz, speed, dt) {
-  const dx = tx - unit.x;
-  const dz = tz - unit.z;
-  const d = Math.sqrt(dx * dx + dz * dz);
-  if (d < 0.01) return;
-  const step = Math.min(d, speed * dt);
-  unit.x += (dx / d) * step;
-  unit.z += (dz / d) * step;
-  unit.angle = Math.atan2(dx, dz);
-  unit.speed = speed;
+export function resetBusted(state) {
+  if (!state) return;
+  state.busted = false;
+  state.units = [];
+  state.roadblocks = [];
+  state.hideTimer = 0;
+  // Masa tenggang singkat supaya pemain tidak langsung tertangkap lagi.
+  state.graceTimer = BUSTED_GRACE;
 }
 
 export function updatePolice(state, dt, ctx) {
-  if (!state) return;
-  const player = ctx && ctx.player;
-  if (!player) return;
-  const step = typeof dt === 'number' && dt > 0 ? dt : 0;
+  if (!state || state.busted) return;
+  if (typeof dt !== 'number' || dt <= 0) dt = 0.016;
+  state.time += dt;
+  if (state.graceTimer > 0) state.graceTimer -= dt;
+  const pos = playerPos(ctx);
+  if (!pos) return;
+  const wanted = clamp(state.wanted || 0, 0, MAX_WANTED);
+  state.wanted = wanted;
 
-  syncUnits(state, ctx);
-
-  if (state.busted) return;
-
-  const speed = 10 + state.wanted * 1.5;
-  const findRoadPath = ctx && typeof ctx.findRoadPath === 'function' ? ctx.findRoadPath : null;
-
-  for (const unit of state.units) {
-    if (findRoadPath) {
-      unit.repath -= step;
-      if (unit.repath <= 0 || !unit.path || unit.pathIndex >= unit.path.length) {
-        try {
-          const path = findRoadPath(
-            { x: unit.x, z: unit.z },
-            { x: player.x, z: player.z },
-          );
-          if (Array.isArray(path) && path.length > 0) {
-            unit.path = path;
-            unit.pathIndex = 0;
-          } else {
-            unit.path = null;
-          }
-        } catch (err) {
-          unit.path = null;
-        }
-        unit.repath = 2.5;
-      }
-      if (unit.path && unit.pathIndex < unit.path.length) {
-        const wp = unit.path[unit.pathIndex];
-        if (dist2d(unit.x, unit.z, wp.x, wp.z) < 3) {
-          unit.pathIndex += 1;
-        } else {
-          moveUnitToward(unit, wp.x, wp.z, speed, step);
-          continue;
-        }
-      }
+  // Jumlah unit mengikuti wanted; wanted 5 memicu 6 unit.
+  const desired = DESIRED_UNITS[wanted];
+  if (state.graceTimer <= 0) {
+    while (state.units.length < desired) {
+      if (!spawnPoliceNear(state, ctx)) break;
     }
-    moveUnitToward(unit, player.x, player.z, speed, step);
+  }
+  while (state.units.length > desired) {
+    state.units.pop();
   }
 
-  // BUSTED saat unit menyentuh pemain.
-  checkBusted(state, ctx);
+  // Roadblock saat wanted minimal 3 (wanted 5: 6 unit + 1 roadblock).
+  if (wanted >= 3 && state.roadblocks.length === 0) {
+    addRoadblockAhead(state, ctx);
+  } else if (wanted < 3 && state.roadblocks.length > 0) {
+    state.roadblocks = [];
+  }
 
-  // Peluruhan wanted: pemain bersembunyi cukup lama — tidak ada unit
-  // dalam jarak pandang — wanted turun 1 tiap 8 detik.
-  if (state.wanted > 0) {
+  // Hitung ulang rute tiap 1,5 detik lewat graf jalan (ctx.findPath).
+  state.repathTimer += dt;
+  if (state.repathTimer >= REPATH_INTERVAL) {
+    state.repathTimer = 0;
+    for (const unit of state.units) {
+      repathUnit(state, unit, ctx);
+    }
+  }
+
+  const policeSpeed = Math.min(POLICE_BASE_SPEED + wanted * POLICE_SPEED_PER_STAR, POLICE_MAX_SPEED);
+  for (const unit of state.units) {
+    if (unit.hitCooldown > 0) unit.hitCooldown -= dt;
+    const d = dist(unit.x, unit.z, pos.x, pos.z);
+    let moveX = 0;
+    let moveZ = 0;
+    if (d < DIRECT_CHASE_RADIUS) {
+      // Kejar langsung bila jarak di bawah 25.
+      moveX = pos.x - unit.x;
+      moveZ = pos.z - unit.z;
+    } else {
+      // Ikuti jalur graf jalan.
+      if (!unit.path || unit.pathIndex >= unit.path.length) {
+        repathUnit(state, unit, ctx);
+      }
+      const waypoint = unit.path && unit.path[unit.pathIndex];
+      if (waypoint) {
+        moveX = waypoint.x - unit.x;
+        moveZ = waypoint.z - unit.z;
+        if (Math.hypot(moveX, moveZ) < 5) {
+          unit.pathIndex += 1;
+          const next = unit.path[unit.pathIndex];
+          if (next) {
+            moveX = next.x - unit.x;
+            moveZ = next.z - unit.z;
+          } else {
+            moveX = pos.x - unit.x;
+            moveZ = pos.z - unit.z;
+          }
+        }
+      } else {
+        moveX = pos.x - unit.x;
+        moveZ = pos.z - unit.z;
+      }
+    }
+    const moveLen = Math.hypot(moveX, moveZ);
+    if (moveLen > 0.001) {
+      moveX /= moveLen;
+      moveZ /= moveLen;
+      unit.x = clamp(unit.x + moveX * policeSpeed * dt, -WORLD_BOUND, WORLD_BOUND);
+      unit.z = clamp(unit.z + moveZ * policeSpeed * dt, -WORLD_BOUND, WORLD_BOUND);
+      unit.angle = Math.atan2(moveX, moveZ);
+      unit.speed = policeSpeed;
+    } else {
+      unit.speed = 0;
+    }
+    // Tabrakan menimbulkan kerusakan TANPA menambah wanted.
+    const afterD = dist(unit.x, unit.z, pos.x, pos.z);
+    if (afterD < COLLISION_RADIUS && unit.hitCooldown <= 0) {
+      const player = ctx.player;
+      if (player && typeof player.health === 'number') {
+        player.health = Math.max(0, player.health - COLLISION_DAMAGE);
+      } else if (player) {
+        player.health = 100 - COLLISION_DAMAGE;
+      }
+      unit.hitCooldown = HIT_COOLDOWN;
+    }
+  }
+
+  // Peluruhan wanted: pemain bersembunyi (jauh dari polisi) cukup lama.
+  if (wanted > 0) {
     let nearest = Infinity;
     for (const unit of state.units) {
-      const d = dist2d(unit.x, unit.z, player.x, player.z);
+      const d = dist(unit.x, unit.z, pos.x, pos.z);
       if (d < nearest) nearest = d;
     }
-    if (state.units.length === 0 || nearest > HIDE_DISTANCE) {
-      state.hideTimer += step;
-      if (state.hideTimer >= HIDE_DECAY_SECONDS) {
-        state.hideTimer = 0;
-        setWanted(state, state.wanted - 1, ctx);
-      }
+    if (nearest > HIDE_DISTANCE || state.units.length === 0) {
+      state.hideTimer += dt;
     } else {
       state.hideTimer = 0;
+    }
+    if (state.hideTimer >= HIDE_TIME_TO_DECAY) {
+      state.hideTimer = 0;
+      setWanted(state, wanted - 1, ctx);
+      toast(ctx, 'Polisi kehilangan jejakmu. Wanted turun ke ' + state.wanted + '.');
     }
   } else {
     state.hideTimer = 0;
   }
+
+  checkBusted(state, ctx);
 }

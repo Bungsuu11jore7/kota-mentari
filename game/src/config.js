@@ -1,123 +1,254 @@
-// KOTA MENTARI — satu tempat untuk semua konstanta game.
-// Semua nama, karakter, distrik, dan cerita di game ini orisinal,
-// tanpa nama atau aset dari game komersial mana pun.
-// Bila angka di file ini berbeda dengan dokumen desain, dokumen desain yang menang.
+// KOTA MENTARI — semua konstanta game.
+// Modul ini HANYA berisi nilai, tanpa logika: ubah angka di sini dan
+// seluruh kota mengikutinya. Tidak ada fungsi, tidak ada percabangan.
 
-export const GAME_TITLE = 'KOTA MENTARI';
-export const GAME_SUBTITLE = 'Kota pesisir tropis — enam misi, satu jalan pulang.';
+export const CONFIG = {
+  title: 'KOTA MENTARI',
+  city: 'Kota Mentari',
+  seed: 7,
+  saveKey: 'kota-mentari-save',
 
-// Benih tetap: kota yang dibangun dari benih ini harus identik antar muat.
-export const WORLD_SEED = 7;
+  // Dunia: peta persegi, laut di timur dan selatan, kota di tengah.
+  world: {
+    size: 1000,
+    halfSize: 500,
+    groundY: 0,
+    seaLevel: -0.5,
+    beachWidth: 24,
+  },
 
-// Kunci penyimpanan lokal untuk save/load.
-export const SAVE_KEY = 'kota-mentari-save-v1';
+  // Kisi jalan: 9 x 9 simpul = 81 simpul, 144 sisi, jarak antar simpul 100.
+  roads: {
+    gridCount: 9,
+    gridSpacing: 100,
+    gridMin: -400,
+    gridMax: 400,
+    nodeCount: 81,
+    edgeCount: 144,
+    roadWidth: 10,
+    sidewalkWidth: 3,
+    lineDash: 6,
+  },
 
-// Ukuran dunia (meter). Kota membentang dari -500 sampai +500 di sumbu x dan z.
-export const WORLD_HALF = 500;
-export const WORLD_SIZE = 1000;
+  // Distrik beserta persegi panjangnya (x0, z0, x1, z1).
+  districts: {
+    pelabuhan: { name: 'Pelabuhan', x0: 300, z0: 200, x1: 500, z1: 500 },
+    pasarLama: { name: 'Pasar Lama', x0: -400, z0: -100, x1: -100, z1: 200 },
+    menara: { name: 'Menara', x0: -100, z0: -500, x1: 300, z1: -200 },
+    pesisir: { name: 'Pesisir', x0: -100, z0: 300, x1: 300, z1: 500 },
+    bukit: { name: 'Bukit', x0: -500, z0: -500, x1: -100, z1: -100 },
+  },
 
-// Kecepatan dalam meter per detik. 1 m/detik = 3,6 km/jam.
-export const MS_TO_KMH = 3.6;
-export const WALK_SPEED = 5;
-export const RUN_SPEED = 9;
-export const CAR_TOP_SPEED = 42;
-export const CAR_ACCEL = 14;
-export const CAR_BRAKE = 30;
-export const CAR_REVERSE_SPEED = 12;
+  // Gedung: 126-147 gedung, target 143 seperti kota acuan.
+  buildings: {
+    min: 126,
+    max: 147,
+    target: 143,
+    minHeight: 8,
+    maxHeight: 60,
+    minFootprint: 12,
+    maxFootprint: 30,
+    minGapFromRoad: 9,
+  },
 
-// Jarak pemicu (meter).
-export const DELIVERY_RADIUS = 12;
-export const MARKER_RADIUS = 12;
-export const PICKUP_RADIUS = 6;
-export const ENTER_CAR_RADIUS = 6;
-export const PUNCH_RANGE = 2.2;
-export const SHOOT_RANGE = 60;
+  // Kapal misi 6 (Jalan Pulang): titik kabur di ujung dermaga Pelabuhan.
+  ship: { x: 470, z: 350, radius: 12 },
 
-// Sistem wanted: 0 sampai 5 bintang.
-export const MAX_WANTED = 5;
-export const WANTED_STAR_CAR_THEFT = 2;
-export const WANTED_STAR_ATTACK = 1;
-export const WANTED_STAR_SHOOT_NEAR_POLICE = 1;
-// Wanted meluruh satu bintang bila pemain bersembunyi cukup lama dari polisi.
-export const WANTED_DECAY_HIDE_SECONDS = 20;
-export const WANTED_DECAY_PER_SECOND = 0.05;
-// Wanted 5 memicu 6 unit polisi + 1 roadblock.
-export const WANTED_FIVE_UNITS = 6;
-export const WANTED_FIVE_ROADBLOCKS = 1;
+  // Misi 1-6, berurutan. Hadiah kumulatif: 500, 1700, 3700, 6700, 14700, 29700.
+  missions: [
+    {
+      id: 1, key: 'paket-kilat', name: 'Paket Kilat', reward: 500, total: 500,
+      target: { x: 100, z: -300 }, district: 'Menara', packages: 3,
+      objective: 'Antar 3 paket ke penanda kuning di Menara',
+    },
+    {
+      id: 2, key: 'mobil-pinjaman', name: 'Mobil Pinjaman', reward: 1200, total: 1700,
+      carSpawn: { x: 100, z: 0 }, target: { x: 0, z: 400 }, district: 'Pesisir',
+      objective: 'Curi mobil oranye di (100, 0), bawa ke Pesisir',
+    },
+    {
+      id: 3, key: 'kejar-bayangan', name: 'Kejar Bayangan', reward: 2000, total: 3700,
+      target: { x: 0, z: 400 }, district: 'Pesisir',
+      objective: 'Kejar target yang melarikan diri sampai ke Pesisir',
+    },
+    {
+      id: 4, key: 'tolong-mira', name: 'Tolong Mira', reward: 3000, total: 6700,
+      target: { x: -200, z: 100 }, district: 'Pasar Lama', attackers: 3,
+      objective: 'Selamatkan Mira di Pasar Lama dari 3 penyerang Geng Ombak',
+    },
+    {
+      id: 5, key: 'brankas-pelabuhan', name: 'Brankas Pelabuhan', reward: 8000, total: 14700,
+      target: { x: 400, z: 300 }, district: 'Pelabuhan',
+      objective: 'Ambil brankas di Pelabuhan',
+    },
+    {
+      id: 6, key: 'jalan-pulang', name: 'Jalan Pulang', reward: 15000, total: 29700,
+      target: { x: 470, z: 350 }, district: 'Pelabuhan',
+      objective: 'Kabur ke kapal di ujung dermaga Pelabuhan',
+    },
+  ],
 
-// Hadiah misi (satuan uang game), berurutan misi 1 sampai 6.
-// Kumulatif: 500, 1.700, 3.700, 6.700, 14.700, 29.700.
-export const MISSION_REWARDS = [500, 1200, 2000, 3000, 8000, 15000];
-export const TOTAL_REWARD = 29700;
+  // Traffic aktif: 28 mobil, 45 pejalan kaki.
+  traffic: {
+    cars: 28,
+    pedestrians: 45,
+    carSpeedMin: 8,
+    carSpeedMax: 14,
+    pedSpeedMin: 1.2,
+    pedSpeedMax: 2.4,
+    spawnRoadMargin: 4,
+  },
 
-export const MISSION_NAMES = [
-  'Paket Kilat',
-  'Mobil Pinjaman',
-  'Kejar Bayangan',
-  'Tolong Mira',
-  'Brankas Pelabuhan',
-  'Jalan Pulang',
-];
+  // Kecepatan dalam meter per detik (km/jam = m/detik x 3,6).
+  speeds: {
+    playerWalk: 5,
+    playerRun: 9,
+    carMax: 42,
+    carAccel: 12,
+    carBrake: 28,
+    carReverseMax: 10,
+    policeMax: 46,
+    chaseTarget: 15,
+    attacker: 3.2,
+    turnRate: 2.4,
+  },
 
-export const MISSION_OBJECTIVES = [
-  'Antar 3 paket ke penanda kuning di Menara',
-  'Bawa mobil oranye ke Pesisir',
-  'Kejar target sampai ke Pesisir',
-  'Selamatkan Mira dari 3 penyerang',
-  'Ambil brankas di Pelabuhan',
-  'Kabur ke kapal di ujung dermaga',
-];
+  // Pemain: Raka Pratama, kurir 28 tahun, kemeja oranye.
+  player: {
+    startX: 0,
+    startZ: 0,
+    startAngle: 0,
+    health: 100,
+    maxHealth: 100,
+    startMoney: 0,
+    punchDamage: 10,
+    pistolDamage: 25,
+    pistolAmmo: 12,
+  },
 
-// Koordinat kunci misi (x, z).
-export const MISSION_TARGETS = {
-  // Misi 1: titik antar paket di Menara (tiga paket, titik yang sama).
-  packageDrop: { x: 100, z: -300 },
-  // Misi 2: mobil oranye ter-spawn di sini, diantar ke Pesisir.
-  missionCar: { x: 100, z: 0 },
-  missionCarColor: 'orange',
-  missionCarDestination: { x: 0, z: 400 },
-  // Misi 3: target kejar melarikan diri menuju Pesisir.
-  chaseDestination: { x: 0, z: 400 },
-  // Misi 4: Mira diserang 3 penyerang di sini.
-  miraRescue: { x: -200, z: 100 },
-  miraAttackers: 3,
-  // Misi 5: brankas di Pelabuhan.
-  safeSpot: { x: 400, z: 300 },
-  // Misi 6: kapal kabur di ujung dermaga.
-  shipSpot: { x: 470, z: 350 },
+  // Sistem wanted 0-5 bintang.
+  wanted: {
+    maxStars: 5,
+    decaySeconds: 25,
+    hideSeconds: 20,
+    stealStars: 2,
+    attackStars: 1,
+    shootNearPoliceStars: 1,
+    policeByStars: [0, 1, 2, 3, 4, 6],
+    roadblockAtStars: 5,
+    bustedDistance: 2.5,
+    spawnDistance: 40,
+    chaseDistance: 120,
+  },
+
+  // Kamera: helper kamera hanya menerima enam angka (mata x/y/z + tatap x/y/z).
+  camera: {
+    chaseDistance: 13,
+    chaseHeight: 4.5,
+    chaseLookAhead: 12,
+    driveDistance: 12,
+    driveHeight: 4,
+    driveLookAhead: 20,
+    walkDistance: 3.4,
+    walkHeight: 1.7,
+    walkLookHeight: 1.3,
+    aerialEye: [60, 200, 280],
+    aerialTarget: [0, 0, -20],
+    fov: 60,
+  },
+
+  // Palet warna kota senja (nilai hex).
+  palette: {
+    skyTop: 0x274b7a,
+    skyHorizon: 0xff9a56,
+    sun: 0xffd27a,
+    fog: 0xf0a266,
+    sea: 0x2e7f9e,
+    sand: 0xe0c98f,
+    grass: 0x5f8f4a,
+    road: 0x3a3a40,
+    roadLine: 0xf2e6a0,
+    sidewalk: 0x9a9a94,
+    buildingRoof: 0x6b5a49,
+    glass: 0x7fb2d9,
+    building: [0xd9c7a7, 0xc9b18c, 0xb59a7a, 0x9c8a7a, 0x7f8ea3, 0xe8dcc3, 0xa8b8c8],
+    carOrange: 0xff7a1a,
+    carColors: [0xff7a1a, 0xd21f2b, 0x2456c9, 0xf2c200, 0xf2f2f2, 0x1c1c22, 0x2e8b57, 0x7a4a9e],
+    policeCar: 0xffffff,
+    policeLightRed: 0xff2222,
+    policeLightBlue: 0x2266ff,
+    playerShirt: 0xff7a1a,
+    playerPants: 0x2b3a55,
+    playerSkin: 0xc98d64,
+    playerHair: 0x1c1410,
+    pedestrian: [0xe74c3c, 0x3498db, 0x2ecc71, 0xf39c12, 0x9b59b6, 0x1abc9c, 0xecf0f1, 0x34495e],
+    marker: 0xffd21f,
+    markerRing: 0xffe95e,
+    ship: 0xe8e2d4,
+    shipAccent: 0x1f4e79,
+  },
+
+  // Kontrol keyboard (nama kode tombol).
+  controls: {
+    forward: 'KeyW',
+    back: 'KeyS',
+    left: 'KeyA',
+    right: 'KeyD',
+    run: 'ShiftLeft',
+    enterCar: 'KeyE',
+    handbrake: 'Space',
+    punch: 'KeyF',
+    weaponFist: 'Digit1',
+    weaponPistol: 'Digit2',
+    pause: 'KeyP',
+    pauseAlt: 'Escape',
+    mute: 'KeyM',
+    start: 'Enter',
+  },
+
+  // Cerita: semua nama asli, bukan dari game komersial mana pun.
+  story: {
+    protagonist: 'Raka Pratama',
+    protagonistAge: 28,
+    protagonistJob: 'kurir',
+    fixer: 'Mira Santosa',
+    antagonist: 'Bos Darma',
+    gang: 'Geng Ombak',
+    intro: 'Raka Pratama, kurir 28 tahun di Kota Mentari, menerima paket terakhir hari itu — dan paket itu mengubah segalanya.',
+  },
+
+  // HUD dan layar.
+  hud: {
+    minimapSize: 160,
+    toastSeconds: 4,
+    screens: ['start', 'playing', 'pause', 'complete', 'busted'],
+  },
+
+  // Audio: volume dan nada dasar (sintesis WebAudio, tanpa berkas suara).
+  audio: {
+    masterVolume: 0.5,
+    engineBaseHz: 55,
+    engineTopHz: 220,
+    sirenHz: [700, 950],
+    ambientVolume: 0.05,
+  },
+
+  // Foto: 4 screenshot 1280x720, masing-masing paling besar 256 KiB.
+  screenshots: {
+    width: 1280,
+    height: 720,
+    maxBytes: 262144,
+    names: ['1-chase', '2-drive', '3-street', '4-start'],
+  },
+
+  // Uang staging foto kejar-kejaran (kumulatif setelah misi 5).
+  stagingMoneyChase: 14700,
 };
 
-// Distrik kota.
-export const DISTRICTS = ['Pelabuhan', 'Pasar Lama', 'Menara', 'Pesisir', 'Bukit'];
-
-// Jumlah traffic dan pejalan kaki aktif.
-export const TRAFFIC_CAR_COUNT = 28;
-export const PEDESTRIAN_COUNT = 45;
-
-// Graf jalan kota.
-export const ROAD_NODE_COUNT = 81;
-export const ROAD_EDGE_COUNT = 144;
-
-// Posisi awal pemain.
-export const PLAYER_START = { x: 0, z: 0, heading: 0 };
-export const PLAYER_START_MONEY = 0;
-export const PLAYER_MAX_HEALTH = 100;
-
-// Warna identitas (hex tiga.js).
-export const PLAYER_SHIRT_COLOR = 0xff7a1a;
-export const PLAYER_CAR_COLOR = 0xff8c1a;
-export const POLICE_CAR_COLOR = 0xffffff;
-export const MARKER_COLOR = 0xffd21f;
-
-// Kamera kejar: jarak dan tinggi relatif terhadap pemain/mobil.
-export const CAMERA_CHASE_DISTANCE = 10;
-export const CAMERA_CHASE_HEIGHT = 4.5;
-export const CAMERA_STREET_DISTANCE = 4.5;
-export const CAMERA_STREET_HEIGHT = 1.7;
-
-// Kecepatan gerak penyerang misi 4 (unit per detik, digerakkan loop utama saja).
-export const ATTACKER_SPEED = 3.2;
-
-// Jarak pandang polisi untuk pengejaran (meter).
-export const POLICE_CHASE_RANGE = 90;
-export const POLICE_CATCH_DISTANCE = 2.5;
+export const SEED = CONFIG.seed;
+export const SAVE_KEY = CONFIG.saveKey;
+export const MISSIONS = CONFIG.missions;
+export const DISTRICTS = CONFIG.districts;
+export const PALETTE = CONFIG.palette;
+export const SHIP = CONFIG.ship;
+export const TRAFFIC = CONFIG.traffic;

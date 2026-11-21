@@ -1,366 +1,414 @@
-// KOTA MENTARI — HUD: manajer layar, nilai game, minimap, dan toast.
-// Modul ini hanya menyentuh DOM. Ia tidak membaca variabel global game:
-// semua keadaan masuk lewat argumen (cuplikan) di setiap pemanggilan.
+// KOTA MENTARI — modul HUD (module-level, tanpa objek hud).
+// Menampilkan nyawa, uang, senjata, bintang wanted, kecepatan, minimap,
+// kotak misi, toast, dan layar mulai / jeda / TAMAT / BUSTED.
+// API BEKU: initHud, showScreen, drawHud, showToast, clearToasts,
+// getCurrentScreen. Layar: 'start' | 'playing' | 'paused' | 'complete'
+// | 'busted'. HUD hanya menampilkan — tidak menghitung logika game.
 
-const MISSIONS = [
-  { title: "Paket Kilat", text: "Antar 3 paket ke penanda kuning di Menara." },
-  { title: "Mobil Pinjaman", text: "Curi mobil oranye di (100, 0), lalu bawa ke Pesisir." },
-  { title: "Kejar Bayangan", text: "Kejar target yang melarikan diri sampai ke Pesisir." },
-  { title: "Tolong Mira", text: "Selamatkan Mira di (-200, 100) dari 3 penyerang." },
-  { title: "Brankas Pelabuhan", text: "Ambil brankas di Pelabuhan (400, 300)." },
-  { title: "Jalan Pulang", text: "Kabur ke kapal di dermaga (470, 350)." },
-];
+const SAVE_KEY = 'kota-mentari-save';
+const WORLD_EXTENT = 600; // dunia dipetakan dari -600..600 ke minimap
+const TOAST_MS = 3500;
 
-const SCREEN_IDS = ["screen-start", "screen-pause", "screen-gameover", "screen-busted"];
-const TOAST_MS = 3200;
-const WORLD_MIN = -550;
-const WORLD_MAX = 550;
+let currentScreen = 'start';
+let callbacks = {};
+let toastTimers = [];
+let lastSnapshot = null;
+let lastMoney = 0;
+let lastObjective = '';
+let lastMissionTitle = '';
+let hudReady = false;
 
-const elCache = {};
-let startCallback = null;
-let currentScreen = "start";
-let toastQueue = [];
-let toastTimer = null;
-let lastToastText = "";
-let minimapCtx = null;
+// ---------- util ----------
 
-function getEl(id) {
-  if (elCache[id]) return elCache[id];
-  if (typeof document === "undefined") return null;
-  const found = document.getElementById(id);
-  if (found) elCache[id] = found;
-  return found;
+function $(id) {
+  return document.getElementById(id);
 }
 
-function pick(obj, keys) {
-  if (!obj || typeof obj !== "object") return undefined;
-  for (const key of keys) {
-    const value = obj[key];
-    if (value !== undefined && value !== null) return value;
+function formatMoney(n) {
+  const v = Math.max(0, Math.floor(Number(n) || 0));
+  return '$' + v.toLocaleString('id-ID');
+}
+
+function clamp(v, lo, hi) {
+  return Math.min(hi, Math.max(lo, v));
+}
+
+// Ambil posisi {x, z} dari berbagai bentuk objek (pemain, polisi, target).
+function posOf(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (typeof obj.x === 'number' && typeof obj.z === 'number') {
+    return { x: obj.x, z: obj.z };
   }
-  return undefined;
-}
-
-function asNumber(value, fallback) {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function clampInt(value, min, max) {
-  const n = Math.round(asNumber(value, min));
-  if (n < min) return min;
-  if (n > max) return max;
-  return n;
-}
-
-function posOf(thing) {
-  if (!thing || typeof thing !== "object") return null;
-  if (typeof thing.x === "number" && typeof thing.z === "number") {
-    return { x: thing.x, z: thing.z };
+  if (obj.position && typeof obj.position.x === 'number' && typeof obj.position.z === 'number') {
+    return { x: obj.position.x, z: obj.position.z };
   }
-  const inner = thing.position || thing.pos;
-  if (inner && typeof inner.x === "number" && typeof inner.z === "number") {
-    return { x: inner.x, z: inner.z };
+  if (obj.pos && typeof obj.pos.x === 'number' && typeof obj.pos.z === 'number') {
+    return { x: obj.pos.x, z: obj.pos.z };
   }
   return null;
 }
 
-function formatMoney(value) {
-  const n = Math.floor(asNumber(value, 0));
-  return n.toLocaleString("id-ID");
-}
+// ---------- misi aktif: objective SELALU dari keadaan misi saat ini ----------
 
-function playerHeadingOf(snapshot, player) {
-  const fromSnap = pick(snapshot, ["sudutPemain", "sudut pemain", "heading", "sudut", "angle", "playerHeading"]);
-  if (typeof fromSnap === "number") return fromSnap;
-  if (player) {
-    const fromPlayer = pick(player, ["heading", "angle", "sudut", "rotationY"]);
-    if (typeof fromPlayer === "number") return fromPlayer;
+function currentMission(state) {
+  if (!state || typeof state !== 'object') return null;
+  if (typeof state.getCurrentMission === 'function') {
+    try {
+      const m = state.getCurrentMission();
+      if (m) return m;
+    } catch (e) { /* abaikan, lanjut ke bentuk lain */ }
   }
-  return 0;
-}
-
-function missionIndexOf(missionState) {
-  if (!missionState || typeof missionState !== "object") return -1;
-  const direct = pick(missionState, ["current", "mission", "index", "nomor"]);
-  if (typeof direct === "number") return direct;
-  return -1;
-}
-
-function objectiveOf(missionState) {
-  const fallback = { title: "KOTA MENTARI", text: "Jelajahi kota, cari penanda misi berikutnya." };
-  if (!missionState || typeof missionState !== "object") return fallback;
-  const active = pick(missionState, ["active", "mission"]);
-  if (active && typeof active === "object") {
-    const name = pick(active, ["nama", "name", "title", "judul"]);
-    const desc = pick(active, ["objective", "text", "deskripsi", "description", "tujuan"]);
-    if (typeof name === "string" || typeof desc === "string") {
-      return {
-        title: typeof name === "string" && name ? name : fallback.title,
-        text: typeof desc === "string" && desc ? desc : "",
-      };
-    }
+  if (state.active && typeof state.active === 'object') return state.active;
+  if (state.currentMission && typeof state.currentMission === 'object') return state.currentMission;
+  if (Array.isArray(state.missions)) {
+    const idx = typeof state.current === 'number' ? state.current : 0;
+    return state.missions[idx] || state.missions[0] || null;
   }
-  const directText = pick(missionState, ["objective", "text", "deskripsi", "description", "tujuan"]);
-  const idx = missionIndexOf(missionState);
-  if (typeof directText === "string" && directText) {
-    const title = idx >= 0 && idx < MISSIONS.length ? MISSIONS[idx].title : fallback.title;
-    return { title: title, text: directText };
+  if (state.mission && typeof state.mission === 'object') return state.mission;
+  return state;
+}
+
+function missionText(state) {
+  const m = currentMission(state);
+  let title = '';
+  let objective = '';
+  if (m) {
+    title = m.name || m.title || m.nama || '';
+    objective = m.objective || m.text || m.description || m.deskripsi || m.hint || '';
   }
-  if (idx >= 0 && idx < MISSIONS.length) {
-    let text = MISSIONS[idx].text;
-    const done = pick(missionState, ["terantar", "delivered", "paketTerantar", "done", "count", "selesai"]);
-    const total = pick(missionState, ["total", "target", "targetCount", "jumlah"]);
-    if (typeof done === "number" && typeof total === "number") {
-      text += " (" + done + " dari " + total + " terantar)";
-    }
-    return { title: MISSIONS[idx].title, text: text };
+  if (!objective && state && typeof state === 'object') {
+    objective = state.objective || state.text || state.currentObjective || '';
   }
-  return fallback;
-}
-
-// Manajer layar: satu-satunya jalan ganti layar. Selalu sembunyikan semua
-// layar dulu, baru tampilkan yang diminta.
-export function hideScreens() {
-  hideToast();
-  for (const id of SCREEN_IDS) {
-    const node = getEl(id);
-    if (node) node.style.display = "none";
+  if (!title && state && typeof state === 'object') {
+    title = state.title || state.name || '';
   }
-  const hud = getEl("hud");
-  if (hud) hud.style.display = "none";
-  currentScreen = "none";
+  return { title, objective };
 }
 
-function showOnly(id) {
-  hideScreens();
-  const node = getEl(id);
-  if (node) node.style.display = "flex";
-  currentScreen = id;
-}
-
-export function showStart() {
-  showOnly("screen-start");
-}
-
-export function showPause() {
-  showOnly("screen-pause");
-}
-
-export function showGameOver(statsText) {
-  showOnly("screen-gameover");
-  if (typeof statsText === "string") {
-    const stats = getEl("gameover-stats");
-    if (stats) stats.textContent = statsText;
+function missionTarget(state) {
+  const m = currentMission(state);
+  const candidates = [
+    m && m.marker, m && m.target, m && m.activeMarker,
+    state && state.marker, state && state.target, state && state.activeMarker,
+    m,
+  ];
+  for (const c of candidates) {
+    const p = posOf(c);
+    if (p) return p;
   }
-}
-
-export function showBusted(statsText) {
-  showOnly("screen-busted");
-  if (typeof statsText === "string") {
-    const stats = getEl("busted-stats");
-    if (stats) stats.textContent = statsText;
+  if (m && typeof m.targetX === 'number' && typeof m.targetZ === 'number') {
+    return { x: m.targetX, z: m.targetZ };
   }
+  return null;
 }
 
-// Toast: antrean dengan pewaktu sendiri. showToast langsung merender,
-// tanpa menunggu misi atau frame berikutnya.
-function renderToast() {
-  const toast = getEl("toast");
-  if (!toast) return;
-  if (toastQueue.length === 0) {
-    toast.style.display = "none";
-    toast.textContent = "";
-    return;
-  }
-  toast.textContent = toastQueue[0];
-  toast.style.display = "block";
-}
+// ---------- minimap ----------
 
-function scheduleToast() {
-  if (toastTimer !== null) return;
-  toastTimer = setTimeout(function () {
-    toastTimer = null;
-    toastQueue.shift();
-    renderToast();
-    if (toastQueue.length > 0) scheduleToast();
-  }, TOAST_MS);
-}
-
-export function showToast(message) {
-  if (typeof message !== "string" || message.length === 0) return;
-  toastQueue.push(message);
-  renderToast();
-  scheduleToast();
-}
-
-export function hideToast() {
-  toastQueue = [];
-  if (toastTimer !== null) {
-    clearTimeout(toastTimer);
-    toastTimer = null;
-  }
-  const toast = getEl("toast");
-  if (toast) {
-    toast.style.display = "none";
-    toast.textContent = "";
-  }
-}
-
-function minimapPoint(x, z, size) {
-  const span = WORLD_MAX - WORLD_MIN;
-  const cx = ((x - WORLD_MIN) / span) * size;
-  const cy = ((z - WORLD_MIN) / span) * size;
-  return {
-    x: Math.max(0, Math.min(size, cx)),
-    y: Math.max(0, Math.min(size, cy)),
-  };
-}
-
-export function drawMinimap(snapshot) {
-  const canvas = getEl("minimap");
-  if (!canvas || typeof canvas.getContext !== "function") return;
-  if (!minimapCtx) minimapCtx = canvas.getContext("2d");
-  const ctx = minimapCtx;
+function drawMinimap(canvas, snapshot) {
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const snap = snapshot || {};
-  const size = canvas.width || 160;
-  ctx.clearRect(0, 0, size, size);
-  ctx.fillStyle = "#10222e";
-  ctx.fillRect(0, 0, size, size);
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
+  const w = canvas.width;
+  const h = canvas.height;
+  const cx = w / 2;
+  const cy = h / 2;
+  const scale = w / (WORLD_EXTENT * 2);
+
+  // Latar gelap.
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0a1622';
+  ctx.fillRect(0, 0, w, h);
+
+  // Garis kisi.
+  ctx.strokeStyle = 'rgba(120, 180, 220, 0.18)';
   ctx.lineWidth = 1;
-  for (let w = WORLD_MIN; w <= WORLD_MAX; w += 100) {
-    const px = minimapPoint(w, 0, size).x;
-    const pz = minimapPoint(0, w, size).y;
-    ctx.beginPath();
-    ctx.moveTo(px, 0);
-    ctx.lineTo(px, size);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(0, pz);
-    ctx.lineTo(size, pz);
-    ctx.stroke();
+  const step = 100 * scale;
+  for (let gx = cx % step; gx < w; gx += step) {
+    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke();
   }
-  const missionState = pick(snap, ["keadaanMisi", "keadaan misi", "missionState", "misi"]);
-  const markerRaw = missionState
-    ? pick(missionState, ["marker", "target", "targetPos", "posisi", "position", "pos"])
-    : pick(snap, ["marker"]);
-  const marker = posOf(markerRaw);
-  if (marker) {
-    const p = minimapPoint(marker.x, marker.z, size);
-    ctx.fillStyle = "#ffd23f";
+  for (let gy = cy % step; gy < h; gy += step) {
+    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
+  }
+
+  // Bingkai + huruf N (utara di atas).
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 13px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillText('N', cx, 4);
+
+  if (!snapshot) return;
+  const toMap = (p) => ({ x: cx + p.x * scale, y: cy + p.z * scale });
+
+  // Target misi: berlian kuning.
+  const missionState = snapshot.missionState || snapshot.mission || snapshot.keadaanMisi || snapshot.missions || null;
+  const target = missionTarget(missionState);
+  if (target) {
+    const t = toMap(target);
+    ctx.fillStyle = '#ffd23f';
     ctx.beginPath();
-    ctx.moveTo(p.x, p.y - 6);
-    ctx.lineTo(p.x + 6, p.y);
-    ctx.lineTo(p.x, p.y + 6);
-    ctx.lineTo(p.x - 6, p.y);
+    ctx.moveTo(t.x, t.y - 6);
+    ctx.lineTo(t.x + 6, t.y);
+    ctx.lineTo(t.x, t.y + 6);
+    ctx.lineTo(t.x - 6, t.y);
     ctx.closePath();
     ctx.fill();
   }
-  const policeState = pick(snap, ["keadaanPolisi", "keadaan polisi", "policeState"]);
-  const policeRaw = pick(snap, ["polisi", "police"]);
-  let units = [];
-  if (policeState) {
-    const fromState = pick(policeState, ["units", "polisi", "members", "cars"]);
-    if (Array.isArray(fromState)) units = fromState;
-  }
-  if (units.length === 0 && Array.isArray(policeRaw)) units = policeRaw;
-  if (Array.isArray(units)) {
-    ctx.fillStyle = "#ff3b30";
-    for (const unit of units) {
-      const up = posOf(unit);
-      if (!up) continue;
-      const p = minimapPoint(up.x, up.z, size);
+
+  // Polisi: titik merah.
+  const police = snapshot.police || [];
+  if (Array.isArray(police)) {
+    ctx.fillStyle = '#ff3b30';
+    for (const unit of police) {
+      const p = posOf(unit);
+      if (!p) continue;
+      const m = toMap(p);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      ctx.arc(m.x, m.y, 3, 0, Math.PI * 2);
       ctx.fill();
     }
   }
-  const player = pick(snap, ["pemain", "player"]);
-  const pp = posOf(player);
-  if (pp) {
-    const heading = playerHeadingOf(snap, player);
-    const p = minimapPoint(pp.x, pp.z, size);
-    const dx = Math.sin(heading);
-    const dz = Math.cos(heading);
-    const tipX = p.x + dx * 9;
-    const tipY = p.y + dz * 9;
-    const baseX = p.x - dx * 6;
-    const baseY = p.y - dz * 6;
-    const perpX = dz;
-    const perpY = -dx;
-    ctx.fillStyle = "#ff8c1a";
+
+  // Pemain: panah putih, diputar mengikuti playerAngle.
+  // Heading: x dari sinus sudut, z dari kosinus sudut.
+  const player = snapshot.player || snapshot.pemain || null;
+  const pPos = posOf(player);
+  if (pPos) {
+    const m = toMap(pPos);
+    const angle = typeof snapshot.playerAngle === 'number' ? snapshot.playerAngle : 0;
+    ctx.save();
+    ctx.translate(m.x, m.y);
+    ctx.rotate(Math.PI - angle);
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#111111';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(tipX, tipY);
-    ctx.lineTo(baseX + perpX * 5, baseY + perpY * 5);
-    ctx.lineTo(baseX - perpX * 5, baseY - perpY * 5);
+    ctx.moveTo(0, -7);
+    ctx.lineTo(5, 6);
+    ctx.lineTo(0, 3);
+    ctx.lineTo(-5, 6);
     ctx.closePath();
     ctx.fill();
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = 1;
     ctx.stroke();
+    ctx.restore();
   }
 }
 
-// Dipanggil tiap frame oleh loop utama dengan satu cuplikan game lengkap.
-// Memperbarui SEMUA nilai (kecepatan, uang, nyawa, wanted, objective,
-// minimap, toast) dan membuat HUD terlihat saat layar bermain.
-export function drawHUD(snapshot) {
-  const snap = snapshot || {};
-  const hud = getEl("hud");
-  // HUD hanya di layar bermain; drawHUD dipanggil tiap frame, jadi tanpa
-  // gate ini HUD menutupi layar mulai/jeda/BUSTED/TAMAT.
-  if (hud) hud.style.display = snap.screen === "game" ? "flex" : "none";
-  currentScreen = "play";
-  const player = pick(snap, ["pemain", "player"]) || {};
-  const policeState = pick(snap, ["keadaanPolisi", "keadaan polisi", "policeState"]) || {};
-  const policeRaw = pick(snap, ["polisi", "police"]);
-  const missionState = pick(snap, ["keadaanMisi", "keadaan misi", "missionState", "misi"]);
+// ---------- toast ----------
 
-  const speedFallback = asNumber(pick(player, ["kecepatan", "speed"]), 0);
-  const speed = asNumber(pick(snap, ["kecepatanKmh", "kecepatan km/jam", "kecepatan", "speedKmh", "speed"]), speedFallback);
-  const speedNode = getEl("hud-speed-value");
-  if (speedNode) speedNode.textContent = String(Math.max(0, Math.round(speed)));
+function renderToast(text) {
+  const box = $('toast-container');
+  if (!box) return;
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = String(text);
+  box.appendChild(el);
+  while (box.children.length > 3) {
+    box.removeChild(box.firstChild);
+  }
+  const timer = window.setTimeout(() => {
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }, TOAST_MS);
+  toastTimers.push(timer);
+}
 
-  const money = asNumber(pick(player, ["uang", "money"]), 0);
-  const moneyNode = getEl("hud-money");
-  if (moneyNode) moneyNode.textContent = formatMoney(money);
+export function showToast(text) {
+  if (text === undefined || text === null || String(text).length === 0) return;
+  renderToast(text);
+}
 
-  const health = clampInt(pick(player, ["nyawa", "health", "hp"]), 0, 100);
-  const healthNode = getEl("hud-health");
-  if (healthNode) healthNode.textContent = String(health);
-  const healthBar = getEl("hud-health-bar");
-  if (healthBar) healthBar.style.width = health + "%";
+export function clearToasts() {
+  for (const t of toastTimers) window.clearTimeout(t);
+  toastTimers = [];
+  const box = $('toast-container');
+  if (box) box.innerHTML = '';
+}
 
-  const wantedRaw = pick(policeState, ["wanted", "bintang", "level"]);
-  const wantedFromPolice = wantedRaw !== undefined ? wantedRaw : pick(policeRaw, ["wanted", "bintang", "level"]);
-  const wantedValue = wantedFromPolice !== undefined ? wantedFromPolice : pick(snap, ["wanted"]);
-  const wanted = clampInt(wantedValue, 0, 5);
-  const wantedNode = getEl("hud-wanted");
-  if (wantedNode) wantedNode.textContent = "★".repeat(wanted) + "☆".repeat(5 - wanted);
+// ---------- manajer layar: sembunyikan SEMUA, baru tampilkan yang diminta ----------
 
-  const objective = objectiveOf(missionState);
-  const titleNode = getEl("hud-objective-title");
-  if (titleNode) titleNode.textContent = objective.title;
-  const textNode = getEl("hud-objective-text");
-  if (textNode) textNode.textContent = objective.text;
+const SCREEN_IDS = {
+  start: 'screen-start',
+  paused: 'screen-paused',
+  complete: 'screen-complete',
+  busted: 'screen-busted',
+};
 
-  drawMinimap(snap);
+export function showScreen(name, data) {
+  const hud = $('hud');
+  for (const key of Object.keys(SCREEN_IDS)) {
+    const el = $(SCREEN_IDS[key]);
+    if (el) el.classList.add('hidden');
+  }
+  if (hud) hud.classList.add('hidden');
 
-  const toastText = pick(snap, ["toast"]);
-  if (typeof toastText === "string" && toastText.length > 0 && toastText !== lastToastText) {
-    lastToastText = toastText;
-    showToast(toastText);
+  currentScreen = name;
+
+  if (name === 'playing') {
+    if (hud) hud.classList.remove('hidden');
+    return;
+  }
+
+  const id = SCREEN_IDS[name];
+  if (id) {
+    const el = $(id);
+    if (el) el.classList.remove('hidden');
+  }
+
+  if (name === 'start') {
+    // Tombol Lanjutkan hanya bila ada simpanan.
+    const btn = $('btn-continue');
+    if (btn) {
+      let hasSave = false;
+      try { hasSave = !!window.localStorage.getItem(SAVE_KEY); } catch (e) { hasSave = false; }
+      btn.classList.toggle('hidden', !hasSave);
+    }
+  }
+
+  if (name === 'complete') {
+    // UANG AKHIR ASLI dari keadaan game — jangan pernah nol bila game menyimpan uang.
+    const money = (data && (data.money ?? data.uang ?? data.finalMoney))
+      ?? lastMoney ?? 0;
+    const el = $('complete-money');
+    if (el) el.textContent = formatMoney(money);
+    const obj = $('complete-objective');
+    if (obj) obj.textContent = 'Semua misi selesai!';
+    // Gambar minimap sekali dari keadaan terakhir.
+    drawMinimap($('complete-minimap'), lastSnapshot);
   }
 }
 
-export function initHUD(onStart) {
-  if (typeof onStart === "function") startCallback = onStart;
-  const button = getEl("btn-start");
-  if (button && typeof button.addEventListener === "function") {
-    button.addEventListener("click", function () {
-      if (typeof startCallback === "function") startCallback();
+export function getCurrentScreen() {
+  return currentScreen;
+}
+
+// ---------- gambar HUD tiap frame ----------
+
+export function drawHud(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return;
+  lastSnapshot = snapshot;
+
+  const player = snapshot.player || snapshot.pemain || {};
+  const police = snapshot.police || [];
+  const missionState = snapshot.missionState || snapshot.mission || snapshot.keadaanMisi || snapshot.missions || null;
+  const policeState = snapshot.policeState || snapshot.keadaanPolisi || null;
+
+  // Uang: field pemain adalah `uang`; `money` alias.
+  const money = player.uang ?? player.money ?? snapshot.uang ?? snapshot.money ?? 0;
+  lastMoney = money;
+
+  // Nyawa 0..100.
+  const health = clamp(Number(player.health ?? player.nyawa ?? player.hp ?? 100), 0, 100);
+
+  // Senjata: nama atau nomor (1 tinju, 2 pistol).
+  let weapon = player.weapon ?? player.senjata ?? snapshot.weapon ?? 'Tinju';
+  if (typeof weapon === 'number') weapon = weapon === 2 ? 'Pistol' : 'Tinju';
+  if (typeof weapon === 'string') {
+    const w = weapon.toLowerCase();
+    if (w === 'fist' || w === '1') weapon = 'Tinju';
+    else if (w === 'pistol' || w === 'gun' || w === '2') weapon = 'Pistol';
+  }
+
+  // Kecepatan km/jam.
+  const speed = Math.round(Number(
+    snapshot.speedKmh ?? snapshot.speed ?? snapshot.kecepatan
+    ?? player.speedKmh ?? player.speed ?? 0,
+  ) || 0);
+
+  // Wanted 0..5 bintang.
+  const wanted = clamp(Math.round(Number(
+    snapshot.wanted ?? (policeState && policeState.wanted)
+    ?? player.wanted ?? 0,
+  ) || 0), 0, 5);
+
+  // Teks objective SELALU dari keadaan misi aktif saat ini.
+  // Loop utama menitipkan teks objective ASLI (dari getObjectiveText)
+  // di snapshot — pakai itu dulu; missionText hanya cadangan bila
+  // snapshot tidak membawanya (objek misi tidak punya field objective).
+  const snapObjective =
+    typeof snapshot.objective === 'string' && snapshot.objective ? snapshot.objective : '';
+  const snapTitle =
+    typeof snapshot.missionTitle === 'string' && snapshot.missionTitle
+      ? snapshot.missionTitle
+      : '';
+  const { title, objective } = missionText(missionState);
+  if (snapTitle || title) lastMissionTitle = snapTitle || title;
+  if (snapObjective || objective) lastObjective = snapObjective || objective;
+
+  // --- tulis ke DOM ---
+  const moneyEl = $('hud-money');
+  if (moneyEl) moneyEl.textContent = formatMoney(money);
+
+  const healthFill = $('health-fill');
+  if (healthFill) healthFill.style.width = health + '%';
+  const healthText = $('hud-health-text');
+  if (healthText) healthText.textContent = Math.round(health);
+
+  const weaponEl = $('hud-weapon');
+  if (weaponEl) weaponEl.textContent = String(weapon);
+
+  const starsEl = $('hud-stars');
+  if (starsEl) {
+    const stars = starsEl.querySelectorAll('.star');
+    stars.forEach((s, i) => {
+      s.classList.toggle('lit', i < wanted);
+      s.textContent = i < wanted ? '★' : '☆';
     });
   }
-  showStart();
+
+  const speedEl = $('hud-speed');
+  if (speedEl) speedEl.textContent = speed + ' km/j';
+
+  const missionTitleEl = $('mission-title');
+  if (missionTitleEl) missionTitleEl.textContent = lastMissionTitle || 'Misi';
+  const missionObjEl = $('mission-objective');
+  if (missionObjEl) missionObjEl.textContent = lastObjective || 'Jelajahi Kota Mentari.';
+
+  // Toast dari cuplikan (bila loop utama menitipkan teks toast).
+  if (snapshot.toast) showToast(snapshot.toast);
+
+  // Minimap tiap frame.
+  drawMinimap($('hud-minimap'), snapshot);
+
+  // HUD terlihat jika dan hanya jika layar aktif adalah layar bermain.
+  const hud = $('hud');
+  if (hud && currentScreen === 'playing') hud.classList.remove('hidden');
+}
+
+// ---------- inisialisasi ----------
+
+export function initHud(cb) {
+  callbacks = cb || {};
+  if (hudReady) return;
+  hudReady = true;
+
+  const bind = (id, fn) => {
+    const el = $(id);
+    if (el && typeof fn === 'function') el.addEventListener('click', fn);
+  };
+
+  // Tombol mulai HARUS memanggil onStart() tanpa argumen: addEventListener
+  // meneruskan MouseEvent (dengan .x/.y = posisi klik) yang akan dibaca
+  // startGame sebagai data save bila diteruskan mentah-mentah.
+  bind('btn-start', () => {
+    if (typeof callbacks.onStart === 'function') callbacks.onStart();
+  });
+  bind('btn-continue', callbacks.onContinue);
+  bind('btn-resume', callbacks.onResume);
+  bind('btn-retry', callbacks.onRetry);
+  bind('btn-play-again', callbacks.onPlayAgain);
+  bind('btn-quit-pause', callbacks.onQuitToMenu);
+  bind('btn-quit-busted', callbacks.onQuitToMenu);
+  bind('btn-quit-complete', callbacks.onQuitToMenu);
+
+  // Enter mulai dari layar awal — memanggil fungsi mulai yang sama
+  // dengan tombol Mulai Baru (lewat onStart).
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && currentScreen === 'start' && typeof callbacks.onStart === 'function') {
+      callbacks.onStart();
+    }
+  });
+
+  showScreen('start');
 }
