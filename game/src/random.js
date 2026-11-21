@@ -1,98 +1,56 @@
 // KOTA MENTARI — generator acak berbiji (deterministik).
-// Benih sama -> urutan sama, selalu. Semua keacakan dunia (gedung, traffic,
-// pejalan kaki, warna mobil) memakai generator ini supaya kota identik
-// setiap kali dimuat. Tidak ada Math.random di sini.
+// Benih sama selalu menghasilkan urutan yang sama, supaya kota dan
+// penempatan traffic identik di setiap muat. Dipakai modul dunia dan traffic.
 
-function mulberry32(seed) {
-  let a = seed | 0;
-  return function next() {
+// Pembuat generator dari satu angka benih.
+export function makeRng(seed) {
+  let a = (seed >>> 0) || 1;
+
+  // Bilangan desimal berikutnya dalam [0, 1).
+  function next() {
+    a |= 0;
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+  }
 
-function resolveNext(rng) {
-  if (typeof rng === 'function') return rng;
-  if (rng && typeof rng.next === 'function') return rng.next.bind(rng);
-  throw new Error('RNG KOTA MENTARI: butuh generator dari createRng(benih)');
-}
-
-// Pembuat generator: menerima satu angka benih, mengembalikan objek dengan
-// next() dan helper int/float/pick/shuffle yang memakai urutan yang sama.
-export function createRng(seed) {
-  const next = mulberry32(seed);
-  const rng = {
-    seed,
+  return {
     next,
+
+    // Bilangan bulat dalam [min, max] (inklusif).
     int(min, max) {
-      return Math.floor(next() * (max - min + 1)) + min;
+      const lo = Math.ceil(min);
+      const hi = Math.floor(max);
+      return lo + Math.floor(next() * (hi - lo + 1));
     },
+
+    // Bilangan desimal dalam [min, max).
     float(min, max) {
-      return next() * (max - min) + min;
+      return min + next() * (max - min);
     },
+
+    // Satu unsur acak dari daftar (daftar tidak diubah).
     pick(list) {
       if (!list || list.length === 0) return undefined;
       return list[Math.floor(next() * list.length)];
     },
+
+    // Salinan daftar dengan urutan teracak (daftar asli tidak diubah).
     shuffle(list) {
-      const out = list.slice();
-      for (let i = out.length - 1; i > 0; i -= 1) {
+      const arr = list.slice();
+      for (let i = arr.length - 1; i > 0; i -= 1) {
         const j = Math.floor(next() * (i + 1));
-        const tmp = out[i];
-        out[i] = out[j];
-        out[j] = tmp;
+        const tmp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = tmp;
       }
-      return out;
-    },
-    // Mulai ulang urutan dari benih awal.
-    reset() {
-      const fresh = mulberry32(seed);
-      rng.next = fresh;
+      return arr;
     },
   };
-  return rng;
 }
 
-// Bilangan bulat dalam rentang [min, max] (inklusif).
-export function rngInt(rng, min, max) {
-  const next = resolveNext(rng);
-  return Math.floor(next() * (max - min + 1)) + min;
-}
-
-// Bilangan desimal dalam rentang [min, max).
-export function rngFloat(rng, min, max) {
-  const next = resolveNext(rng);
-  return next() * (max - min) + min;
-}
-
-// Satu unsur acak dari daftar.
-export function rngPick(rng, list) {
-  if (!list || list.length === 0) return undefined;
-  const next = resolveNext(rng);
-  return list[Math.floor(next() * list.length)];
-}
-
-// Salinan daftar yang urutannya diacak (daftar asli tidak diubah).
-export function rngShuffle(rng, list) {
-  const next = resolveNext(rng);
-  const out = list.slice();
-  for (let i = out.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(next() * (i + 1));
-    const tmp = out[i];
-    out[i] = out[j];
-    out[j] = tmp;
-  }
-  return out;
-}
-
-// Benih dari teks (dipakai bila benih perlu diturunkan dari sebuah nama).
-export function seedFromText(text) {
-  let h = 2166136261;
-  for (let i = 0; i < text.length; i += 1) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
+// Generator default dunia: benih tetap 7.
+export function makeWorldRng() {
+  return makeRng(7);
 }

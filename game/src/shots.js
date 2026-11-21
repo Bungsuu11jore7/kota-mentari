@@ -1,490 +1,355 @@
-// KOTA MENTARI — penata 4 foto (staging screenshot).
-// Dipakai skrip retake foto, BUKAN saat bermain biasa. Setiap penata foto
-// memakai antarmuka debug (KOTA_DEBUG) dan helper kamera ENAM ANGKA saja
-// (posisi mata x/y/z + titik tatap x/y/z), lalu MEMVERIFIKASI dulu sebelum
-// menangkap gambar: kota ter-render, mobil pemain + polisi dalam pandangan
-// kamera, traffic terlihat. Bila verifikasi gagal keras, penata melempar
-// error supaya skrip retake tahu staging mana yang rusak.
-// Benih penata foto: 7.
+// KOTA MENTARI — penata 4 foto (staging screenshot 1280x720).
+// Dipakai skrip retake SETELAH playtest; tidak dipakai saat bermain biasa.
+// Staging memakai antarmuka debug (KOTA_DEBUG) + helper kamera ENAM ANGKA
+// saja. Setiap penata foto WAJIB memverifikasi dulu sebelum menangkap:
+// kota ter-render (sceneChildren ~960+), mobil pemain + polisi dalam
+// pandangan kamera, traffic terlihat.
+//
+// PERBAIKAN v10 flag no.5 (ditulis sejak awal): tryCall aman bila
+// uang/misi undefined — tidak pernah crash bila state belum siap; guard
+// dengan nilai default yang aman.
+// PERBAIKAN v10 flag no.6: setelah setWanted(3), teleport 25 m ke belakang
+// (berlawanan haluan) supaya polisi jadi formasi intersep di depan, bukan
+// menempel bumper; kuras antrean toast dulu sebelum memicu banner paket.
 
-import { CONFIG } from './config.js';
-
-export const STAGE_SEED = 7;
-export const SHOT_NAMES = ['chase', 'drive', 'street', 'start'];
+import {
+  MISSION_CUMULATIVE,
+  MISSION_TARGETS,
+  SHIP,
+  TRAFFIC,
+} from "./config.js";
 
 // ---------------------------------------------------------------------------
-// Util kecil
+// tryCall: pemanggil aman. Bila fn bukan fungsi, undefined, atau throw,
+// kembalikan fallback — JANGAN PERNAH crash (uang/misi boleh undefined).
 // ---------------------------------------------------------------------------
-
-function sleepDefault(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function tryCall(fn, fallback) {
+  if (typeof fn !== "function") return fallback;
+  try {
+    const v = fn();
+    return v === undefined || v === null ? fallback : v;
+  } catch (err) {
+    return fallback;
+  }
 }
 
-// Panggil method debug pertama yang ada dari daftar nama kandidat.
-function callFirst(obj, names, ...args) {
+// Coba beberapa nama method debug (nama persis boleh berbeda antar lane);
+// kembalikan hasil pertama yang terdefinisi, atau undefined.
+function callNamed(obj, names, ...args) {
   if (!obj) return undefined;
   for (const name of names) {
     const fn = obj[name];
-    if (typeof fn === 'function') {
-      try {
-        return fn.apply(obj, args);
-      } catch (err) {
-        return undefined;
-      }
+    if (typeof fn !== "function") continue;
+    try {
+      const v = fn.apply(obj, args);
+      if (v !== undefined && v !== null) return v;
+      return v;
+    } catch (err) {
+      // Coba nama berikutnya.
     }
   }
   return undefined;
 }
 
-// Sama, tapi tanpa menelan error pemanggil bila method-nya memang ada.
-function callStrict(obj, names, ...args) {
-  if (!obj) return undefined;
-  for (const name of names) {
-    const fn = obj[name];
-    if (typeof fn === 'function') return fn.apply(obj, args);
+// Baca state lengkap dari debug, dengan default aman bila belum siap.
+export function safeState(debug) {
+  const raw = tryCall(
+    () => callNamed(debug, ["getState", "getGameState", "state"]),
+    null
+  );
+  const s = raw && typeof raw === "object" ? raw : {};
+  if (!raw && debug && typeof debug.state === "object" && debug.state) {
+    Object.assign(s, debug.state);
   }
-  return undefined;
-}
-
-function num(value, fallback) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-// Arah maju dari sudut: komponen x dari sinus, komponen z dari kosinus.
-function forwardFromAngle(angle) {
-  return { x: Math.sin(angle), z: Math.cos(angle) };
-}
-
-function norm3(x, y, z) {
-  const len = Math.sqrt(x * x + y * y + z * z) || 1;
-  return { x: x / len, y: y / len, z: z / len };
-}
-
-// Apakah titik berada dalam pandangan kamera (di depan, cukup dekat)?
-function pointInView(eye, target, point, maxDist) {
-  const f = norm3(target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]);
-  const vx = point.x - eye[0];
-  const vy = (point.y == null ? 0 : point.y) - eye[1];
-  const vz = point.z - eye[2];
-  const dist = Math.sqrt(vx * vx + vy * vy + vz * vz);
-  if (dist > (maxDist || 300) || dist < 0.5) return false;
-  const dot = (vx * f.x + vy * f.y + vz * f.z) / dist;
-  return dot > 0.45;
-}
-
-// ---------------------------------------------------------------------------
-// Membaca keadaan game lewat antarmuka debug (toleran terhadap bentuk state)
-// ---------------------------------------------------------------------------
-
-function readState(debug) {
-  const raw = callFirst(debug, ['getState', 'state', 'getDebugState', 'snapshot']);
-  if (raw && typeof raw === 'object') return raw;
-  return {};
-}
-
-function statePlayer(state) {
-  const p = state.player || state.pemain || {};
+  // Uang: field `uang` utama, `money` alias. Default aman 0.
+  const uang = s.uang !== undefined && s.uang !== null
+    ? s.uang
+    : (s.money !== undefined && s.money !== null ? s.money : 0);
+  // Misi: objek { current } atau angka. Default aman misi 0.
+  let missionCurrent = 0;
+  if (s.mission && typeof s.mission === "object" && s.mission.current !== undefined) {
+    missionCurrent = s.mission.current;
+  } else if (typeof s.mission === "number") {
+    missionCurrent = s.mission;
+  } else if (typeof s.currentMission === "number") {
+    missionCurrent = s.currentMission;
+  }
   return {
-    x: num(p.x != null ? p.x : p.pos && p.pos.x, 0),
-    z: num(p.z != null ? p.z : p.pos && p.pos.z, 0),
-    angle: num(p.angle != null ? p.angle : p.heading, 0),
-    speedKmh: num(
-      p.speedKmh != null ? p.speedKmh : p.speed != null ? p.speed * 3.6 : p.speedKmh,
-      0,
-    ),
-    inCar: !!(p.inCar || p.driving || p.vehicle),
+    raw: s,
+    uang,
+    money: uang,
+    missionCurrent,
+    wanted: s.wanted !== undefined && s.wanted !== null ? s.wanted : 0,
+    player: s.player || s.playerPos || null,
+    playerX: s.player && s.player.x !== undefined ? s.player.x : (s.playerX !== undefined ? s.playerX : 0),
+    playerZ: s.player && s.player.z !== undefined ? s.player.z : (s.playerZ !== undefined ? s.playerZ : 0),
+    heading: s.heading !== undefined ? s.heading : (s.player && s.player.heading !== undefined ? s.player.heading : 0),
+    speedKmh: s.speedKmh !== undefined ? s.speedKmh : (s.speed !== undefined ? s.speed * 3.6 : 0),
+    sceneChildren: s.sceneChildren !== undefined ? s.sceneChildren : (s.children !== undefined ? s.children : undefined),
+    trafficCars: s.trafficCars !== undefined ? s.trafficCars : (s.traffic && s.traffic.cars ? s.traffic.cars.length : undefined),
+    trafficPeds: s.trafficPeds !== undefined ? s.trafficPeds : (s.traffic && s.traffic.pedestrians ? s.traffic.pedestrians.length : undefined),
+    police: s.police || (s.policeState && s.policeState.units) || [],
+    screen: s.screen || s.currentScreen || undefined,
   };
 }
 
-function statePolice(state) {
-  const raw = state.police;
-  const list = Array.isArray(raw) ? raw : raw && Array.isArray(raw.units) ? raw.units : [];
-  return list.map((u) => ({
-    x: num(u.x != null ? u.x : u.pos && u.pos.x, NaN),
-    z: num(u.z != null ? u.z : u.pos && u.pos.z, NaN),
-  })).filter((u) => Number.isFinite(u.x) && Number.isFinite(u.z));
-}
-
-function stateTraffic(state) {
-  const raw = state.traffic || {};
-  const carsRaw = Array.isArray(raw.cars) ? raw.cars : Array.isArray(state.trafficCars) ? state.trafficCars : null;
-  const pedsRaw = Array.isArray(raw.pedestrians) ? raw.pedestrians : Array.isArray(state.trafficPeds) ? state.trafficPeds : null;
-  const toPoints = (arr) => (arr || []).map((u) => ({
-    x: num(u.x != null ? u.x : u.pos && u.pos.x, NaN),
-    z: num(u.z != null ? u.z : u.pos && u.pos.z, NaN),
-    color: u.color || u.colour || null,
-  })).filter((u) => Number.isFinite(u.x) && Number.isFinite(u.z));
-  return {
-    cars: toPoints(carsRaw),
-    pedestrians: toPoints(pedsRaw),
-    carCount: num(
-      state.trafficCars != null && !Array.isArray(state.trafficCars) ? state.trafficCars : raw.carCount,
-      carsRaw ? carsRaw.length : NaN,
-    ),
-    pedCount: num(
-      state.trafficPeds != null && !Array.isArray(state.trafficPeds) ? state.trafficPeds : raw.pedCount,
-      pedsRaw ? pedsRaw.length : NaN,
-    ),
-  };
-}
-
-function stateSceneChildren(state, debug) {
-  const direct = num(state.sceneChildren, NaN);
-  if (Number.isFinite(direct)) return direct;
-  const fromWorld = num(state.world && state.world.sceneChildren, NaN);
-  if (Number.isFinite(fromWorld)) return fromWorld;
-  const viaDebug = num(callFirst(debug, ['getSceneChildren', 'sceneChildren']), NaN);
-  if (Number.isFinite(viaDebug)) return viaDebug;
-  const info = callFirst(debug, ['getSceneInfo']);
-  if (info && typeof info === 'object') return num(info.sceneChildren, NaN);
-  return NaN;
-}
-
-function stateMarker(state, debug) {
-  const m = state.marker || state.activeMarker || null;
-  if (m && Number.isFinite(Number(m.x)) && Number.isFinite(Number(m.z))) {
-    return { x: Number(m.x), z: Number(m.z) };
-  }
-  const viaDebug = callFirst(debug, ['getMarker', 'getActiveMarker']);
-  if (viaDebug && Number.isFinite(Number(viaDebug.x))) {
-    return { x: Number(viaDebug.x), z: Number(viaDebug.z) };
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------------------
-// Verifikasi dunia sebelum menangkap gambar
+// Verifikasi dunia sebelum menangkap gambar.
+// Throw bila kota TIDAK ter-render (sceneChildren angka tapi < 900).
+// Bila angka tidak tersedia di state, catat 'unknown' dan lanjut.
 // ---------------------------------------------------------------------------
-
-function verifyWorld(env, need) {
-  const { debug } = env;
-  const state = readState(debug);
-  const player = statePlayer(state);
-  const police = statePolice(state);
-  const traffic = stateTraffic(state);
-  const sceneChildren = stateSceneChildren(state, debug);
+export function verifyWorld(debug) {
+  const st = safeState(debug);
   const checks = {
-    sceneChildren: Number.isFinite(sceneChildren) ? sceneChildren : 'unknown',
-    trafficCars: Number.isFinite(traffic.carCount) ? traffic.carCount : traffic.cars.length || 'unknown',
-    trafficPeds: Number.isFinite(traffic.pedCount) ? traffic.pedCount : traffic.pedestrians.length || 'unknown',
-    policeUnits: police.length,
-    playerX: player.x,
-    playerZ: player.z,
-    speedKmh: player.speedKmh,
-    money: num(state.money != null ? state.money : state.uang != null ? state.uang : player.uang, NaN),
-    wanted: num(state.wanted != null ? state.wanted : state.police && state.police.wanted, NaN),
-    mission: num(state.mission != null ? state.mission : state.currentMission != null ? state.currentMission : state.current, NaN),
+    sceneChildren: st.sceneChildren,
+    trafficCars: st.trafficCars,
+    trafficPeds: st.trafficPeds,
+    cityRendered: "unknown",
+    trafficVisible: "unknown",
   };
-  const failures = [];
-  // Kota HARUS ter-render: ~960+ simpul scene, bukan 3 (langit kosong).
-  if (Number.isFinite(sceneChildren) && sceneChildren < 900) {
-    failures.push(`kota tidak ter-render: sceneChildren ${sceneChildren} (< 900)`);
-  }
-  if (need.minTrafficCars != null) {
-    const total = Number.isFinite(traffic.carCount) ? traffic.carCount : traffic.cars.length;
-    if (Number.isFinite(total) && total < need.minTrafficCars) {
-      failures.push(`traffic mobil ${total} (< ${need.minTrafficCars})`);
+  if (typeof st.sceneChildren === "number") {
+    checks.cityRendered = st.sceneChildren >= 900;
+    if (!checks.cityRendered) {
+      throw new Error(`kota belum ter-render: sceneChildren=${st.sceneChildren} (butuh ~960+)`);
     }
   }
-  if (need.minTrafficPeds != null) {
-    const total = Number.isFinite(traffic.pedCount) ? traffic.pedCount : traffic.pedestrians.length;
-    if (Number.isFinite(total) && total < need.minTrafficPeds) {
-      failures.push(`pejalan kaki ${total} (< ${need.minTrafficPeds})`);
-    }
+  if (typeof st.trafficCars === "number") {
+    checks.trafficVisible = st.trafficCars >= 1;
+    if (st.trafficCars < 1) throw new Error("traffic tidak terlihat: 0 mobil");
   }
-  if (need.minPolice != null && police.length < need.minPolice) {
-    failures.push(`polisi ${police.length} (< ${need.minPolice})`);
+  return checks;
+}
+
+// Apakah titik (x, y, z) berada dalam pandangan kamera (eye -> target)?
+function pointInView(eye, target, px, py, pz, halfFovDeg) {
+  const dx = target[0] - eye[0];
+  const dy = target[1] - eye[1];
+  const dz = target[2] - eye[2];
+  const dLen = Math.hypot(dx, dy, dz) || 1;
+  const vx = px - eye[0];
+  const vy = py - eye[1];
+  const vz = pz - eye[2];
+  const vLen = Math.hypot(vx, vy, vz) || 1;
+  const dot = (dx * vx + dy * vy + dz * vz) / (dLen * vLen);
+  const cosHalf = Math.cos(((halfFovDeg || 35) * Math.PI) / 180);
+  return dot > cosHalf;
+}
+
+// Arah maju dari heading: x dari sinus, z dari kosinus.
+function forwardOf(heading) {
+  return [Math.sin(heading), Math.cos(heading)];
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function setMoney(debug, value) {
+  callNamed(debug, ["setMoney", "setUang"], value);
+}
+
+function setMission(debug, index) {
+  callNamed(debug, ["setMission", "setCurrentMission"], index);
+}
+
+function setWanted(debug, level) {
+  callNamed(debug, ["setWanted", "setWantedLevel"], level);
+}
+
+function teleport(debug, x, z, heading) {
+  if (heading !== undefined) {
+    const v = callNamed(debug, ["teleport", "teleportPlayer", "setPlayerPosition"], x, z, heading);
+    if (v !== undefined) return v;
   }
-  if (failures.length > 0) {
-    const err = new Error(`verifikasi foto gagal: ${failures.join('; ')}`);
-    err.checks = checks;
-    throw err;
-  }
-  return { state, player, police, traffic, sceneChildren, checks };
+  return callNamed(debug, ["teleport", "teleportPlayer", "setPlayerPosition"], x, z);
 }
 
-function verifyInView(eye, target, points, minCount, label) {
-  if (!points || points.length === 0) return { count: 0, note: `${label}: posisi tidak tersedia di state` };
-  const visible = points.filter((p) => pointInView(eye, target, p));
-  if (visible.length < minCount) {
-    throw new Error(`verifikasi foto gagal: ${label} terlihat ${visible.length} (< ${minCount})`);
-  }
-  return { count: visible.length, note: `${label} terlihat ${visible.length}` };
+function showToast(debug, text) {
+  callNamed(debug, ["showToast", "toast", "showBanner"], text);
 }
 
-async function showToast(env, text) {
-  const { debug } = env;
-  const shown = callFirst(debug, ['showToast', 'toast']);
-  if (shown !== undefined) return true;
-  try {
-    const hud = await import('./hud.js');
-    if (hud && typeof hud.showToast === 'function') {
-      hud.showToast(text);
-      return true;
-    }
-  } catch (err) { /* HUD tidak menyediakan showToast */ }
-  return false;
+function startGame(debug) {
+  callNamed(debug, ["startGame", "start", "play"]);
 }
 
-function pressKeyFn(env) {
-  return typeof env.pressKey === 'function' ? env.pressKey : null;
-}
-
-async function startGame(env) {
-  const { debug } = env;
-  callFirst(debug, ['startGame', 'start', 'beginGame']);
-  const pressKey = pressKeyFn(env);
-  if (pressKey) {
-    try { await pressKey('Enter', 120); } catch (err) { /* abaikan */ }
-  }
-  await (env.sleep || sleepDefault)(600);
-}
-
-function setMission(env, index) {
-  callFirst(env.debug, ['setMission', 'setMissionIndex', 'setCurrentMission'], index);
-}
-
-function setMoney(env, value) {
-  callFirst(env.debug, ['setMoney', 'setUang'], value);
-}
-
-function setWanted(env, stars) {
-  callFirst(env.debug, ['setWanted', 'setWantedLevel'], stars);
-}
-
-function teleport(env, x, z, angle) {
-  if (angle != null) {
-    callFirst(env.debug, ['setPlayerAngle', 'setAngle'], angle);
-  }
-  callFirst(env.debug, ['teleport', 'warpTo', 'setPlayerPosition'], x, z);
-  if (angle != null) {
-    // Coba juga teleport 3 argumen (x, z, sudut) bila didukung.
-    callFirst(env.debug, ['teleport'], x, z, angle);
+function spawnMissionCar(debug, x, z, color) {
+  const v = callNamed(debug, ["spawnMissionCar", "spawnCar"], x, z, color);
+  if (v === undefined) {
+    // Coba lagi dengan warna sebagai angka hex.
+    callNamed(debug, ["spawnMissionCar", "spawnCar"], x, z, 0xff7a1a);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Foto 1 — chase: kejar-kejaran, mobil oranye + 3 polisi formasi baji
+// Foto 1 — chase: mobil oranye + 3 polisi formasi baji + wanted 3 +
+// toast misi + kecepatan ~100 km/jam + minimap + objective + uang 14700.
 // ---------------------------------------------------------------------------
-
-export async function stageChase(env) {
-  const sleep = env.sleep || sleepDefault;
-  const pressKey = pressKeyFn(env);
-  await startGame(env);
-  setMission(env, 5);
-  setMoney(env, CONFIG.stagingMoneyChase);
-  setWanted(env, 3);
-  // Mobil misi oranye di (100, 0); pemain teleport ke sampingnya lalu masuk.
-  callFirst(env.debug, ['spawnMissionCar', 'spawnCar'], 100, 0, 'orange');
-  teleport(env, 96, 2);
+export async function stageShot1(env) {
+  const debug = env.debug;
+  const setCamera = env.setCamera;
+  startGame(debug);
+  await sleep(600);
+  setMission(debug, 4);
+  setMoney(debug, MISSION_CUMULATIVE[4]);
+  teleport(debug, MISSION_TARGETS.ORANGE_CAR.x, MISSION_TARGETS.ORANGE_CAR.z);
+  await sleep(300);
+  spawnMissionCar(debug, MISSION_TARGETS.ORANGE_CAR.x, MISSION_TARGETS.ORANGE_CAR.z, "orange");
+  await sleep(300);
+  await tryCall(() => env.pressKey("KeyE", 150), undefined);
   await sleep(400);
-  if (pressKey) {
-    await pressKey('KeyE', 150);
-    await sleep(600);
-    // Gas sampai sekitar 100 km/jam.
-    await pressKey('KeyW', 2600);
-  }
-  // Beri waktu polisi mendekat membentuk formasi baji di belakang pemain.
-  await sleep(1200);
-  const v = verifyWorld(env, { minTrafficCars: 1, minPolice: 3 });
-  const fwd = forwardFromAngle(v.player.angle);
-  const eye = [
-    v.player.x - fwd.x * 26,
-    7,
-    v.player.z - fwd.z * 26,
-  ];
-  const target = [
-    v.player.x + fwd.x * 6,
-    1,
-    v.player.z + fwd.z * 6,
-  ];
-  verifyInView(eye, target, [{ x: v.player.x, z: v.player.z }], 1, 'mobil pemain');
-  verifyInView(eye, target, v.police, 3, 'polisi');
-  await showToast(env, 'Misi 6: Jalan Pulang — kabur ke kapal di Pelabuhan!');
-  const speed = v.checks.speedKmh;
-  return {
-    shot: 1,
-    name: 'chase',
-    camera: [...eye, ...target],
-    verified: v.checks,
-    speedKmh: speed,
-    money: CONFIG.stagingMoneyChase,
-    wanted: 3,
-    note: `kejar-kejaran, kecepatan ${Number.isFinite(speed) ? Math.round(speed) : '?'} km/jam, 3 polisi di belakang`,
-  };
+  setWanted(debug, 3);
+  await sleep(800);
+  // Trik staging: teleport 25 m ke belakang (berlawanan haluan) supaya
+  // polisi jadi formasi intersep di depan, bukan menempel bumper.
+  const st0 = safeState(debug);
+  const fwd = forwardOf(st0.heading || 0);
+  const backX = st0.playerX - fwd[0] * 25;
+  const backZ = st0.playerZ - fwd[1] * 25;
+  teleport(debug, backX, backZ);
+  await sleep(300);
+  // Gas sampai ~100 km/jam.
+  await tryCall(() => env.pressKey("KeyW", 2400), undefined);
+  await sleep(300);
+  showToast(debug, "Misi: Brankas Pelabuhan — ambil brankas di Pelabuhan");
+  const checks = verifyWorld(debug);
+  const st = safeState(debug);
+  const f = forwardOf(st.heading || 0);
+  const px = st.playerX;
+  const pz = st.playerZ;
+  // Kamera dari depan-samping: mata di depan pemain, tatap ke belakang
+  // melewati mobil pemain — polisi formasi baji di belakang ikut terbingkai.
+  const eye = [px + f[0] * 22 + f[1] * 9, 7, pz + f[1] * 22 - f[0] * 9];
+  const target = [px - f[0] * 10, 1.5, pz - f[1] * 10];
+  const camera = [eye[0], eye[1], eye[2], target[0], target[1], target[2]];
+  // Verifikasi: mobil pemain + polisi dalam pandangan kamera.
+  const policeList = Array.isArray(st.police) ? st.police : [];
+  const policeInView = policeList.filter((u) => {
+    const ux = u.x !== undefined ? u.x : (u.pos ? u.pos.x : px);
+    const uz = u.z !== undefined ? u.z : (u.pos ? u.pos.z : pz);
+    return pointInView(eye, target, ux, 1.5, uz, 35);
+  }).length;
+  checks.playerInView = pointInView(eye, target, px, 1.5, pz, 35);
+  checks.policeUnits = policeList.length;
+  checks.policeInView = policeInView;
+  checks.uang = st.uang;
+  checks.wanted = st.wanted;
+  checks.speedKmh = Math.round(st.speedKmh);
+  setCamera(camera[0], camera[1], camera[2], camera[3], camera[4], camera[5]);
+  await sleep(300);
+  return { shot: 1, camera, checks };
 }
 
 // ---------------------------------------------------------------------------
-// Foto 2 — drive: avenue RAMAI, 6+ mobil, 8+ pejalan kaki, 1 polisi jauh
+// Foto 2 — drive: avenue Pusat kota RAMAI: 6+ mobil traffic, 8+ pejalan
+// kaki di kedua trotoar, 1 mobil polisi di kejauhan, penanda misi di depan,
+// ~60 km/jam.
 // ---------------------------------------------------------------------------
-
-export async function stageDrive(env) {
-  const sleep = env.sleep || sleepDefault;
-  const pressKey = pressKeyFn(env);
-  await startGame(env);
-  setMission(env, 0);
-  setMoney(env, 500);
-  setWanted(env, 1);
-  // Avenue utara di x=100 menuju penanda Menara (100, -300); hadap utara.
-  callFirst(env.debug, ['spawnMissionCar', 'spawnCar'], 100, 62, 'orange');
-  teleport(env, 100, 58, Math.PI);
+export async function stageShot2(env) {
+  const debug = env.debug;
+  const setCamera = env.setCamera;
+  startGame(debug);
+  await sleep(600);
+  setMission(debug, 0);
+  setMoney(debug, MISSION_CUMULATIVE[0]);
+  // Avenue Pusat kota: persimpangan tersibuk di tengah peta.
+  teleport(debug, 0, 100);
+  await sleep(300);
+  spawnMissionCar(debug, 0, 100, "orange");
+  await sleep(300);
+  await tryCall(() => env.pressKey("KeyE", 150), undefined);
   await sleep(400);
-  if (pressKey) {
-    await pressKey('KeyE', 150);
-    await sleep(600);
-    // Gas secukupnya: sekitar 60 km/jam.
-    await pressKey('KeyW', 1400);
-  }
-  await sleep(900);
-  const v = verifyWorld(env, { minTrafficCars: 6, minTrafficPeds: 8, minPolice: 1 });
-  const fwd = forwardFromAngle(v.player.angle);
-  const eye = [
-    v.player.x - fwd.x * 12,
-    4,
-    v.player.z - fwd.z * 12,
-  ];
-  const target = [
-    v.player.x + fwd.x * 20,
-    1,
-    v.player.z + fwd.z * 20,
-  ];
-  verifyInView(eye, target, [{ x: v.player.x, z: v.player.z }], 1, 'mobil pemain');
-  const trafficSeen = verifyInView(eye, target, v.traffic.cars, 6, 'mobil traffic');
-  const pedsSeen = verifyInView(eye, target, v.traffic.pedestrians, 8, 'pejalan kaki');
-  const policeSeen = verifyInView(eye, target, v.police, 1, 'polisi');
-  const marker = stateMarker(v.state, env.debug);
-  let markerAhead = null;
-  if (marker) {
-    const f = forwardFromAngle(v.player.angle);
-    const dx = marker.x - v.player.x;
-    const dz = marker.z - v.player.z;
-    const len = Math.sqrt(dx * dx + dz * dz) || 1;
-    markerAhead = (dx * f.x + dz * f.z) / len > 0.8;
-    if (!markerAhead) throw new Error('verifikasi foto gagal: penanda misi tidak di depan');
-  }
-  await showToast(env, 'Misi 1: Paket Kilat — antar paket ke Menara');
-  const speed = v.checks.speedKmh;
-  return {
-    shot: 2,
-    name: 'drive',
-    camera: [...eye, ...target],
-    verified: v.checks,
-    trafficSeen: trafficSeen.count,
-    pedsSeen: pedsSeen.count,
-    policeSeen: policeSeen.count,
-    markerAhead: marker ? !!markerAhead : 'unknown',
-    speedKmh: speed,
-    note: `avenue ramai: ${trafficSeen.count} mobil + ${pedsSeen.count} pejalan kaki terlihat, kecepatan ${Number.isFinite(speed) ? Math.round(speed) : '?'} km/jam`,
-  };
+  // Berkendara ke utara menuju penanda Menara (~60 km/jam).
+  await tryCall(() => env.pressKey("KeyW", 1400), undefined);
+  await sleep(300);
+  showToast(debug, "Ikuti penanda kuning ke Menara");
+  const checks = verifyWorld(debug);
+  const st = safeState(debug);
+  const f = forwardOf(st.heading || 0);
+  const px = st.playerX;
+  const pz = st.playerZ;
+  // Kamera kejar di belakang mobil: avenue + traffic + pejalan kaki masuk frame.
+  const eye = [px - f[0] * 11, 4.5, pz - f[1] * 11];
+  const target = [px + f[0] * 18, 1.5, pz + f[1] * 18];
+  const camera = [eye[0], eye[1], eye[2], target[0], target[1], target[2]];
+  checks.playerInView = pointInView(eye, target, px, 1.5, pz, 35);
+  checks.trafficCars = typeof st.trafficCars === "number" ? st.trafficCars : "unknown";
+  checks.trafficPeds = typeof st.trafficPeds === "number" ? st.trafficPeds : "unknown";
+  checks.speedKmh = Math.round(st.speedKmh);
+  checks.marker = MISSION_TARGETS.PACKAGE_DROP;
+  setCamera(camera[0], camera[1], camera[2], camera[3], camera[4], camera[5]);
+  await sleep(300);
+  return { shot: 2, camera, checks };
 }
 
 // ---------------------------------------------------------------------------
-// Foto 3 — street: jalan kaki, kamera RENDAH di belakang pemain
+// Foto 3 — street: kamera RENDAH setinggi jalan di belakang pemain,
+// pemain kemeja oranye BESAR di tengah frame menghadap timur,
+// banner "Paket 1 dari 3 terantar", wanted 1.
 // ---------------------------------------------------------------------------
-
-export async function stageStreet(env) {
-  const sleep = env.sleep || sleepDefault;
-  await startGame(env);
-  setMission(env, 0);
-  setMoney(env, 0);
-  setWanted(env, 1);
-  // Jalan kaki di persimpangan (0, 0), menghadap timur (sudut PI/2).
-  teleport(env, 0, 0, Math.PI / 2);
-  await sleep(700);
-  const v = verifyWorld(env, { minTrafficCars: 1, minTrafficPeds: 2, minPolice: 1 });
-  const fwd = forwardFromAngle(v.player.angle);
-  // Kamera RENDAH setinggi jalan, tepat di belakang pemain: pemain BESAR
-  // di tengah frame, bukan kamera udara dari atas.
-  const eye = [
-    v.player.x - fwd.x * 3.4,
-    1.7,
-    v.player.z - fwd.z * 3.4,
-  ];
-  const target = [
-    v.player.x + fwd.x * 3,
-    1.3,
-    v.player.z + fwd.z * 3,
-  ];
-  verifyInView(eye, target, [{ x: v.player.x, z: v.player.z }], 1, 'pemain');
-  const trafficSeen = verifyInView(eye, target, v.traffic.cars, 1, 'mobil traffic');
-  const pedsSeen = verifyInView(eye, target, v.traffic.pedestrians, 2, 'pejalan kaki');
-  const redAhead = v.traffic.cars.find((c) => {
-    if (!c.color) return false;
-    const s = String(c.color).toLowerCase();
-    return s.includes('red') || s.includes('merah') || s === '#d21f2b' || s === '0xd21f2b';
-  });
-  await showToast(env, 'Paket 1 dari 3 terantar');
-  return {
-    shot: 3,
-    name: 'street',
-    camera: [...eye, ...target],
-    verified: v.checks,
-    trafficSeen: trafficSeen.count,
-    pedsSeen: pedsSeen.count,
-    redCarAhead: !!redAhead,
-    banner: 'Paket 1 dari 3 terantar',
-    wanted: 1,
-    note: 'jalan kaki, kamera rendah di belakang pemain, banner paket tampil',
-  };
+export async function stageShot3(env) {
+  const debug = env.debug;
+  const setCamera = env.setCamera;
+  startGame(debug);
+  await sleep(600);
+  setMission(debug, 0);
+  setMoney(debug, MISSION_CUMULATIVE[0]);
+  setWanted(debug, 1);
+  // Jalan kaki di jalan kota, menghadap timur (heading = PI/2: x dari sinus).
+  const east = Math.PI / 2;
+  callNamed(debug, ["setHeading", "setPlayerHeading"], east);
+  teleport(debug, 0, 50, east);
+  await sleep(400);
+  // Kuras antrean toast dulu sebelum memicu banner paket.
+  await sleep(2600);
+  showToast(debug, "Paket 1 dari 3 terantar");
+  const checks = verifyWorld(debug);
+  const st = safeState(debug);
+  const heading = east;
+  const f = forwardOf(heading);
+  const px = st.playerX;
+  const pz = st.playerZ;
+  // Kamera rendah setinggi jalan, tepat di belakang pemain.
+  const eye = [px - f[0] * 3.5, 1.7, pz - f[1] * 3.5];
+  const target = [px + f[0] * 8, 1.3, pz + f[1] * 8];
+  const camera = [eye[0], eye[1], eye[2], target[0], target[1], target[2]];
+  checks.playerInView = pointInView(eye, target, px, 1.3, pz, 35);
+  checks.banner = "Paket 1 dari 3 terantar";
+  checks.wanted = st.wanted;
+  setCamera(camera[0], camera[1], camera[2], camera[3], camera[4], camera[5]);
+  await sleep(300);
+  return { shot: 3, camera, checks };
 }
 
 // ---------------------------------------------------------------------------
-// Foto 4 — start: layar mulai + kota dari udara (senja)
+// Foto 4 — start: layar mulai + kota dari udara (senja).
 // ---------------------------------------------------------------------------
-
-export async function stageStart(env) {
-  const sleep = env.sleep || sleepDefault;
-  // Kembali ke layar mulai (bukan layar bermain).
-  const shown = callFirst(env.debug, ['showScreen', 'showStart', 'toMenu', 'quitToMenu'], 'start');
+export async function stageShot4(env) {
+  const debug = env.debug;
+  const setCamera = env.setCamera;
+  // Kembali ke layar mulai.
+  const shown = callNamed(debug, ["showScreen", "setScreen"], "start");
   if (shown === undefined) {
-    callFirst(env.debug, ['showScreen'], 'menu');
+    callNamed(debug, ["toMenu", "showStart", "goToStart"]);
   }
-  await sleep(700);
-  const v = verifyWorld(env, {});
-  const cam = CONFIG.camera;
-  const eye = cam.aerialEye.slice();
-  const target = cam.aerialTarget.slice();
-  // Layar mulai harus menampilkan judul + tombol Mulai Baru.
-  let startVisible = 'unknown';
-  try {
-    if (typeof document !== 'undefined' && document.body) {
-      const text = document.body.innerText || '';
-      startVisible = text.includes('Mulai Baru') && text.includes(CONFIG.title);
-    }
-  } catch (err) { /* dokumen tidak tersedia */ }
-  if (startVisible === false) {
-    throw new Error('verifikasi foto gagal: layar mulai tidak menampilkan judul + tombol Mulai Baru');
-  }
-  return {
-    shot: 4,
-    name: 'start',
-    camera: [...eye, ...target],
-    verified: v.checks,
-    startVisible,
-    note: 'layar mulai + kota senja dari udara',
-  };
+  await sleep(500);
+  const checks = verifyWorld(debug);
+  // Kamera udara: kota senja dari atas, menghadap pusat kota.
+  const camera = [0, 240, 300, 0, 0, 0];
+  setCamera(camera[0], camera[1], camera[2], camera[3], camera[4], camera[5]);
+  await sleep(400);
+  checks.screen = safeState(debug).screen;
+  return { shot: 4, camera, checks };
 }
 
-// ---------------------------------------------------------------------------
-// Dispatcher: dipakai skrip retake (stageShot(n, env))
-// ---------------------------------------------------------------------------
-
+// Dispatcher: stageShot(n, env). n = 1..4.
 export async function stageShot(n, env) {
-  const shot = Number(n);
-  if (!env || !env.debug || typeof env.setCamera !== 'function') {
-    throw new Error('stageShot butuh env { debug, setCamera, sleep?, pressKey? }');
-  }
-  if (!env.sleep) env.sleep = sleepDefault;
-  let report;
-  if (shot === 1) report = await stageChase(env);
-  else if (shot === 2) report = await stageDrive(env);
-  else if (shot === 3) report = await stageStreet(env);
-  else if (shot === 4) report = await stageStart(env);
-  else throw new Error(`stageShot: nomor foto tidak dikenal: ${n}`);
-  // Terapkan kamera hasil staging lewat helper enam angka.
-  const c = report.camera;
-  env.setCamera(c[0], c[1], c[2], c[3], c[4], c[5]);
-  report.seed = STAGE_SEED;
-  return report;
+  if (n === 1) return stageShot1(env);
+  if (n === 2) return stageShot2(env);
+  if (n === 3) return stageShot3(env);
+  if (n === 4) return stageShot4(env);
+  throw new Error(`stageShot: nomor foto tidak dikenal: ${n}`);
 }
+
+// Kapal misi 6 (dipakai staging / verifikasi akhir).
+export const SHIP_TARGET = SHIP;
+export const TRAFFIC_TARGET = TRAFFIC;

@@ -1,28 +1,22 @@
-// KOTA MENTARI — pembangun kota (Lane B, v9)
-// Kota pesisir tropis fiktif: persegi -500..500, kisi jalan tiap 100,
-// lebar jalan 14, trotoar 4, graf jalan 81 simpul / 144 sisi.
-// PERBAIKAN WAJIB v9: buildCity WAJIB menerima scene dan menambahkan SEMUA
-// mesh ke scene itu; bila scene tidak diberikan, WAJIB throw (tidak ada
-// fallback diam-diam yang menghasilkan kota kosong).
+// KOTA MENTARI — world.js
+// Pembangun kota pesisir tropis: kisi jalan, gedung, properti, laut, dan kapal.
+// Semua keacakan memakai RNG berbiji tetap (benih 7) supaya kota deterministik.
 import * as THREE from '../vendor/three.module.min.js';
 
-// Angka-angka dunia (dari dokumen desain 00-design.md).
-export const MAP_HALF = 500;
+export const WORLD_SEED = 7;
+export const CITY_BOUNDS = 500;
 export const ROAD_SPACING = 100;
 export const ROAD_WIDTH = 14;
 export const SIDEWALK_WIDTH = 4;
-export const WORLD_SEED = 7;
-export const SHIP_X = 470;
-export const SHIP_Z = 350;
-export const SHIP_RADIUS = 12;
-// Koridor dermaga menuju kapal: persegi yang WAJIB bersih dari gedung/properti.
-export const DOCK_CORRIDOR = { x0: 370, x1: 500, z0: 315, z1: 385 };
-export const ROAD_LINES = [-400, -300, -200, -100, 0, 100, 200, 300, 400];
+export const SHIP_POSITION = { x: 470, z: 350, radius: 12 };
+export const DOCK_CORRIDOR = { minX: 380, maxX: 500, minZ: 325, maxZ: 375 };
 
-// RNG berbiji deterministik (benih tetap 7) supaya kota sama antar muat.
-function mulberry32(seed) {
+const ROAD_COORDS = [-400, -300, -200, -100, 0, 100, 200, 300, 400];
+
+// RNG berbiji (mulberry32) — deterministik antar muat.
+export function createSeededRng(seed) {
   let a = seed >>> 0;
-  return function () {
+  return function rng() {
     a |= 0;
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
@@ -31,379 +25,501 @@ function mulberry32(seed) {
   };
 }
 
+function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
 function pick(rng, arr) {
   return arr[Math.floor(rng() * arr.length)];
 }
 
-function inCorridor(x, z, pad) {
+// Distrik dari posisi. Menerima (x, z) atau (world, x, z).
+export function districtAt(a, b, c) {
+  let x;
+  let z;
+  if (typeof a === 'object' && a !== null) {
+    x = b;
+    z = c;
+  } else {
+    x = a;
+    z = b;
+  }
+  if (x >= 300 && z >= 100) return 'Pelabuhan';
+  if (z >= 300) return 'Pesisir';
+  if (x <= -200 && z >= -150) return 'Pasar Lama';
+  if (z <= -150 && x < 0) return 'Bukit';
+  return 'Menara';
+}
+
+export function getShipPosition() {
+  return { x: SHIP_POSITION.x, z: SHIP_POSITION.z, radius: SHIP_POSITION.radius };
+}
+
+function inSea(x, z) {
+  if (x >= 455 && z >= 200) return true;
+  if (z >= 455) return true;
+  return false;
+}
+
+function onPier(x, z) {
+  return x >= 380 && x <= 485 && z >= 344 && z <= 356;
+}
+
+function inDockCorridor(x, z) {
   return (
-    x >= DOCK_CORRIDOR.x0 - pad &&
-    x <= DOCK_CORRIDOR.x1 + pad &&
-    z >= DOCK_CORRIDOR.z0 - pad &&
-    z <= DOCK_CORRIDOR.z1 + pad
+    x >= DOCK_CORRIDOR.minX && x <= DOCK_CORRIDOR.maxX &&
+    z >= DOCK_CORRIDOR.minZ && z <= DOCK_CORRIDOR.maxZ
   );
 }
 
-function rectHitsCorridor(x, z, hw, hd, pad) {
-  return (
-    x + hw >= DOCK_CORRIDOR.x0 - pad &&
-    x - hw <= DOCK_CORRIDOR.x1 + pad &&
-    z + hd >= DOCK_CORRIDOR.z0 - pad &&
-    z - hd <= DOCK_CORRIDOR.z1 + pad
-  );
-}
-
-// Graf jalan: simpul pada kisi -400..400 tiap 100 (9x9 = 81 simpul),
-// sisi ke tetangga ortogonal (9 baris x 8 + 9 kolom x 8 = 144 sisi).
+// Graf jalan: simpul di tiap persimpangan kisi (-400..400 tiap 100).
 function buildRoadGraph() {
   const nodes = [];
-  const indexOf = new Map();
+  const nodeId = new Map();
   for (let iz = 0; iz < 9; iz++) {
     for (let ix = 0; ix < 9; ix++) {
-      const x = -400 + ix * 100;
-      const z = -400 + iz * 100;
-      indexOf.set(ix + ',' + iz, nodes.length);
-      nodes.push({ x, z, ix, iz });
+      const x = ROAD_COORDS[ix];
+      const z = ROAD_COORDS[iz];
+      nodeId.set(ix + ',' + iz, nodes.length);
+      nodes.push({ x: x, z: z, ix: ix, iz: iz });
     }
   }
   const edges = [];
-  const adjacency = nodes.map(() => []);
-  function link(a, b) {
-    edges.push([a, b]);
+  const adjacency = nodes.map(function () { return []; });
+  function link(ix1, iz1, ix2, iz2) {
+    const a = nodeId.get(ix1 + ',' + iz1);
+    const b = nodeId.get(ix2 + ',' + iz2);
+    edges.push({ a: a, b: b });
     adjacency[a].push(b);
     adjacency[b].push(a);
   }
   for (let iz = 0; iz < 9; iz++) {
     for (let ix = 0; ix < 9; ix++) {
-      const n = indexOf.get(ix + ',' + iz);
-      if (ix < 8) link(n, indexOf.get(ix + 1 + ',' + iz));
-      if (iz < 8) link(n, indexOf.get(ix + ',' + (iz + 1)));
+      if (ix < 8) link(ix, iz, ix + 1, iz);
+      if (iz < 8) link(ix, iz, ix, iz + 1);
     }
   }
-  return { nodes, edges, adjacency };
+  return { nodes: nodes, edges: edges, adjacency: adjacency };
 }
 
-export function getDistrict(world, x, z) {
-  void world;
-  if (x >= 300) return 'Pelabuhan';
-  if (z >= 300) return 'Pesisir';
-  if (Math.abs(x) <= 200 && Math.abs(z) <= 200) return 'Menara';
-  if (x < -200 && z < -100) return 'Bukit';
-  return 'Pasar Lama';
+function nearestNodeId(graph, x, z) {
+  const ix = clamp(Math.round(x / 100) + 4, 0, 8);
+  const iz = clamp(Math.round(z / 100) + 4, 0, 8);
+  return iz * 9 + ix;
 }
 
-export function getShipPosition(world) {
-  void world;
-  return { x: SHIP_X, z: SHIP_Z, radius: SHIP_RADIUS };
-}
-
-export function isDockCorridorClear(world) {
-  for (const b of world.buildings) {
-    if (rectHitsCorridor(b.x, b.z, b.w / 2, b.d / 2, 0)) return false;
-  }
-  for (const p of world.props) {
-    if (inCorridor(p.x, p.z, 0)) return false;
-  }
-  return true;
-}
-
-export function isBlocked(world, x, z) {
-  if (Math.abs(x) > MAP_HALF - 2 || Math.abs(z) > MAP_HALF - 2) return true;
-  for (const b of world.buildings) {
-    if (Math.abs(x - b.x) < b.w / 2 + 1.5 && Math.abs(z - b.z) < b.d / 2 + 1.5) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Titik jalan terdekat: proyeksi ke garis jalan vertikal/horizontal terdekat.
-export function nearestRoad(world, x, z) {
-  void world;
-  const snap = (v) => Math.max(-400, Math.min(400, Math.round(v / 100) * 100));
-  const cx = snap(x);
-  const cz = snap(z);
-  if (Math.abs(x - cx) <= Math.abs(z - cz)) return { x: cx, z };
-  return { x, z: cz };
-}
-
-// SATU-SATUNYA definisi pencari jalur: BFS di graf jalan internal.
-// Tanda tangan BEKU: findRoadPath(world, sx, sz, gx, gz) -> [{x, z}, ...].
+// SATU-SATUNYA definisi pencari jalur: BFS di atas graf jalan internal.
+// findRoadPath(world, sx, sz, gx, gz) -> array titik {x, z}.
 export function findRoadPath(world, sx, sz, gx, gz) {
-  const toNode = (x, z) => {
-    const ix = Math.max(0, Math.min(8, Math.round((x + 400) / 100)));
-    const iz = Math.max(0, Math.min(8, Math.round((z + 400) / 100)));
-    return iz * 9 + ix;
-  };
-  const start = toNode(sx, sz);
-  const goal = toNode(gx, gz);
-  const prev = new Array(world.nodes.length).fill(-1);
-  const queue = [start];
-  prev[start] = start;
+  const graph = world.roadGraph;
+  const startId = nearestNodeId(graph, sx, sz);
+  const goalId = nearestNodeId(graph, gx, gz);
+  const start = { x: sx, z: sz };
+  const goal = { x: gx, z: gz };
+  if (startId === goalId) return [start, goal];
+  const prev = new Array(graph.nodes.length).fill(-1);
+  const queue = [startId];
+  prev[startId] = startId;
   while (queue.length > 0) {
     const cur = queue.shift();
-    if (cur === goal) break;
-    for (const nb of world.adjacency[cur]) {
+    if (cur === goalId) break;
+    const neighbours = graph.adjacency[cur];
+    for (let i = 0; i < neighbours.length; i++) {
+      const nb = neighbours[i];
       if (prev[nb] === -1) {
         prev[nb] = cur;
         queue.push(nb);
       }
     }
   }
-  const path = [];
-  if (prev[goal] === -1) return [{ x: sx, z: sz }, { x: gx, z: gz }];
-  let cur = goal;
+  if (prev[goalId] === -1) return [start, goal];
   const chain = [];
-  while (cur !== start) {
-    chain.push(world.nodes[cur]);
+  let cur = goalId;
+  while (cur !== startId) {
+    chain.push(graph.nodes[cur]);
     cur = prev[cur];
   }
-  chain.push(world.nodes[start]);
+  chain.push(graph.nodes[startId]);
   chain.reverse();
-  path.push({ x: sx, z: sz });
-  for (const n of chain) path.push({ x: n.x, z: n.z });
-  path.push({ x: gx, z: gz });
+  const path = [start];
+  for (let i = 0; i < chain.length; i++) {
+    const p = { x: chain[i].x, z: chain[i].z };
+    const last = path[path.length - 1];
+    if (last.x !== p.x || last.z !== p.z) path.push(p);
+  }
+  const last = path[path.length - 1];
+  if (last.x !== goal.x || last.z !== goal.z) path.push(goal);
   return path;
 }
 
-// Daftar posisi spawn valid: titik di jalan, di dalam |x|,|z| <= 396,
-// tidak di dalam bangunan, tidak di koridor dermaga.
-export function getValidSpawnPositions(world, count) {
-  const out = [];
-  for (const line of ROAD_LINES) {
-    for (let v = -400; v <= 400; v += 50) {
-      const candidates = [
-        { x: line, z: v },
-        { x: v, z: line },
-      ];
-      for (const p of candidates) {
-        if (Math.abs(p.x) > 396 || Math.abs(p.z) > 396) continue;
-        if (inCorridor(p.x, p.z, 0)) continue;
-        if (isBlocked(world, p.x, p.z)) continue;
-        out.push({ x: p.x, z: p.z });
-      }
+// Titik jalan terdekat: titik terdekat pada garis tengah jalan.
+export function nearestRoad(world, x, z) {
+  const vx = clamp(Math.round(x / 100) * 100, -400, 400);
+  const hz = clamp(Math.round(z / 100) * 100, -400, 400);
+  if (Math.abs(x - vx) <= Math.abs(z - hz)) {
+    return { x: vx, z: clamp(z, -400, 400) };
+  }
+  return { x: clamp(x, -400, 400), z: hz };
+}
+
+// Apakah titik terhalang (di dalam bangunan / di luar kota / di laut).
+export function isBlocked(world, x, z) {
+  if (Math.abs(x) > CITY_BOUNDS || Math.abs(z) > CITY_BOUNDS) return true;
+  if (onPier(x, z)) return false;
+  if (inSea(x, z)) return true;
+  const buildings = world.buildings;
+  for (let i = 0; i < buildings.length; i++) {
+    const b = buildings[i];
+    if (Math.abs(x - b.x) <= b.w / 2 + 1.5 && Math.abs(z - b.z) <= b.d / 2 + 1.5) {
+      return true;
     }
   }
-  if (typeof count === 'number' && count >= 0) return out.slice(0, count);
+  return false;
+}
+
+// Koridor dermaga menuju kapal harus bersih dari bangunan dan properti.
+export function isDockCorridorClear(world) {
+  for (let i = 0; i < world.buildings.length; i++) {
+    const b = world.buildings[i];
+    if (
+      b.x + b.w / 2 >= DOCK_CORRIDOR.minX - 2 && b.x - b.w / 2 <= DOCK_CORRIDOR.maxX + 2 &&
+      b.z + b.d / 2 >= DOCK_CORRIDOR.minZ - 2 && b.z - b.d / 2 <= DOCK_CORRIDOR.maxZ + 2
+    ) {
+      return false;
+    }
+  }
+  for (let i = 0; i < world.props.length; i++) {
+    const p = world.props[i];
+    if (inDockCorridor(p.x, p.z)) return false;
+  }
+  return true;
+}
+
+// Posisi spawn valid: simpul jalan + titik tengah sisi, |x|,|z| <= 396,
+// tidak di dalam bangunan, tidak di koridor dermaga.
+export function getValidSpawnPositions(world) {
+  const out = [];
+  const graph = world.roadGraph;
+  for (let i = 0; i < graph.nodes.length; i++) {
+    const n = graph.nodes[i];
+    if (Math.abs(n.x) <= 396 && Math.abs(n.z) <= 396 && !inDockCorridor(n.x, n.z)) {
+      out.push({ x: n.x, z: n.z });
+    }
+  }
+  for (let i = 0; i < graph.edges.length; i++) {
+    const e = graph.edges[i];
+    const a = graph.nodes[e.a];
+    const b = graph.nodes[e.b];
+    const mx = (a.x + b.x) / 2;
+    const mz = (a.z + b.z) / 2;
+    if (Math.abs(mx) <= 396 && Math.abs(mz) <= 396 && !inDockCorridor(mx, mz)) {
+      out.push({ x: mx, z: mz });
+    }
+  }
   return out;
 }
 
+const DISTRICT_COLORS = {
+  Menara: [0xe8e0cc, 0xcfd8dc, 0x90a4ae, 0xfff3e0, 0xb0bec5, 0xffe0b2],
+  Pelabuhan: [0x8d6e63, 0xa1887f, 0x78909c, 0xbcaaa4, 0x6d4c41],
+  'Pasar Lama': [0xffcc80, 0xef9a9a, 0xfff59d, 0xa5d6a7, 0xce93d8, 0xffab91],
+  Pesisir: [0xffffff, 0xffe0b2, 0x80deea, 0xfff9c4, 0xb2ebf2],
+  Bukit: [0xa5d6a7, 0xc8e6c9, 0xd7ccc8, 0xffe0b2, 0xeeeeee]
+};
+
+function buildingHeight(rng, district) {
+  if (district === 'Menara') return 22 + rng() * 36;
+  if (district === 'Pelabuhan') return 10 + rng() * 14;
+  if (district === 'Pasar Lama') return 8 + rng() * 10;
+  if (district === 'Pesisir') return 8 + rng() * 12;
+  return 6 + rng() * 8;
+}
+
+// Pembangun kota. WAJIB menerima scene dan menambahkan SEMUA mesh ke scene itu.
+// Tanpa scene: gagal keras (throw) — tidak ada kota kosong diam-diam.
 export function buildCity(scene, seed) {
   if (!scene || typeof scene.add !== 'function') {
-    throw new Error('buildCity: scene wajib diberikan (KOTA MENTARI)');
+    throw new Error('buildCity membutuhkan scene: panggil buildCity(scene)');
   }
-  const seedValue = typeof seed === 'number' ? seed : WORLD_SEED;
-  const rng = mulberry32(seedValue);
-  const graph = buildRoadGraph();
+  const rng = createSeededRng(seed === undefined ? WORLD_SEED : seed);
+  const roadGraph = buildRoadGraph();
+  const buildings = [];
+  const props = [];
 
-  const world = {
-    seed: seedValue,
-    buildings: [],
-    props: [],
-    nodes: graph.nodes,
-    edges: graph.edges,
-    adjacency: graph.adjacency,
-    roadLines: ROAD_LINES.slice(),
-    ship: { x: SHIP_X, z: SHIP_Z, radius: SHIP_RADIUS },
-    meshCount: 0,
-  };
+  const matCache = new Map();
+  function mat(color) {
+    if (!matCache.has(color)) {
+      matCache.set(color, new THREE.MeshLambertMaterial({ color: color }));
+    }
+    return matCache.get(color);
+  }
+  function boxMesh(w, h, d, color, x, y, z) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat(color));
+    m.position.set(x, y, z);
+    scene.add(m);
+    return m;
+  }
 
-  const addMesh = (mesh) => {
-    scene.add(mesh);
-    world.meshCount++;
-    return mesh;
-  };
-
-  // --- Tanah rumput + laut di tepi Pelabuhan dan Pesisir ---
+  // Tanah rumput.
   const ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(MAP_HALF * 2, MAP_HALF * 2),
-    new THREE.MeshLambertMaterial({ color: 0x4d7a3d })
+    new THREE.PlaneGeometry(1000, 1000),
+    mat(0x58a447)
   );
   ground.rotation.x = -Math.PI / 2;
-  addMesh(ground);
+  ground.position.set(0, 0, 0);
+  scene.add(ground);
 
-  const seaMat = new THREE.MeshLambertMaterial({ color: 0x1e6f9e });
-  const seaEast = new THREE.Mesh(new THREE.PlaneGeometry(70, MAP_HALF * 2), seaMat);
+  // Laut di tepi Pelabuhan (timur) dan Pesisir (selatan).
+  const seaMat = mat(0x1e7fa8);
+  const seaEast = new THREE.Mesh(new THREE.PlaneGeometry(45, 300), seaMat);
   seaEast.rotation.x = -Math.PI / 2;
-  seaEast.position.set(465, 0.02, 0);
-  addMesh(seaEast);
-  const seaSouth = new THREE.Mesh(new THREE.PlaneGeometry(MAP_HALF * 2, 70), seaMat);
+  seaEast.position.set(477.5, 0.02, 350);
+  scene.add(seaEast);
+  const seaSouth = new THREE.Mesh(new THREE.PlaneGeometry(1000, 45), seaMat);
   seaSouth.rotation.x = -Math.PI / 2;
-  seaSouth.position.set(0, 0.02, 465);
-  addMesh(seaSouth);
+  seaSouth.position.set(0, 0.02, 477.5);
+  scene.add(seaSouth);
 
-  // --- Jalan aspal gelap + garis tengah kuning putus-putus ---
-  const roadMat = new THREE.MeshLambertMaterial({ color: 0x2b2b30 });
-  const dashMat = new THREE.MeshLambertMaterial({ color: 0xe8c832 });
-  for (const line of ROAD_LINES) {
-    const vRoad = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_WIDTH, MAP_HALF * 2), roadMat);
-    vRoad.rotation.x = -Math.PI / 2;
-    vRoad.position.set(line, 0.05, 0);
-    addMesh(vRoad);
-    const hRoad = new THREE.Mesh(new THREE.PlaneGeometry(MAP_HALF * 2, ROAD_WIDTH), roadMat);
-    hRoad.rotation.x = -Math.PI / 2;
-    hRoad.position.set(0, 0.05, line);
-    addMesh(hRoad);
-    for (let v = -475; v <= 475; v += 50) {
-      const dashV = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.06, 6), dashMat);
-      dashV.position.set(line, 0.08, v);
-      addMesh(dashV);
-      const dashH = new THREE.Mesh(new THREE.BoxGeometry(6, 0.06, 1.2), dashMat);
-      dashH.position.set(v, 0.08, line);
-      addMesh(dashH);
+  // Jalan aspal gelap: 9 vertikal + 9 horizontal.
+  const roadMat = mat(0x2e2e33);
+  for (let i = 0; i < ROAD_COORDS.length; i++) {
+    const c = ROAD_COORDS[i];
+    const v = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_WIDTH, 1000), roadMat);
+    v.rotation.x = -Math.PI / 2;
+    v.position.set(c, 0.05, 0);
+    scene.add(v);
+    const h = new THREE.Mesh(new THREE.PlaneGeometry(1000, ROAD_WIDTH), roadMat);
+    h.rotation.x = -Math.PI / 2;
+    h.position.set(0, 0.05, c);
+    scene.add(h);
+  }
+
+  // Garis tengah kuning putus-putus di tiap jalan (tiap 60 satuan).
+  const dashGeo = new THREE.BoxGeometry(0.6, 0.1, 4);
+  const dashMat = mat(0xd8b400);
+  for (let i = 0; i < ROAD_COORDS.length; i++) {
+    const c = ROAD_COORDS[i];
+    for (let p = -480; p <= 480; p += 60) {
+      const dv = new THREE.Mesh(dashGeo, dashMat);
+      dv.position.set(c, 0.1, p);
+      scene.add(dv);
+      const dh = new THREE.Mesh(dashGeo, dashMat);
+      dh.rotation.y = Math.PI / 2;
+      dh.position.set(p, 0.1, c);
+      scene.add(dh);
     }
   }
 
-  // --- Trotoar: slab per blok ---
-  const sidewalkMat = new THREE.MeshLambertMaterial({ color: 0x9a9a92 });
-  const blockSize = ROAD_SPACING - ROAD_WIDTH; // 86
-  for (let bx = 0; bx < 8; bx++) {
-    for (let bz = 0; bz < 8; bz++) {
-      const cx = -400 + bx * 100 + 50;
-      const cz = -400 + bz * 100 + 50;
-      const slab = new THREE.Mesh(new THREE.PlaneGeometry(blockSize, blockSize), sidewalkMat);
-      slab.rotation.x = -Math.PI / 2;
-      slab.position.set(cx, 0.03, cz);
-      addMesh(slab);
+  // Blok kota 10x10: trotoar (atau pasir di tepi laut / dermaga).
+  function blockIsBuildable(ix, iz) {
+    if (iz === 9) return false;
+    if (ix === 9 && iz >= 7) return false;
+    return true;
+  }
+  for (let iz = 0; iz < 10; iz++) {
+    for (let ix = 0; ix < 10; ix++) {
+      const cx = -450 + ix * 100;
+      const cz = -450 + iz * 100;
+      const buildable = blockIsBuildable(ix, iz);
+      const plane = new THREE.Mesh(
+        new THREE.PlaneGeometry(86, 86),
+        mat(buildable ? 0xb8b0a0 : 0xd9c28a)
+      );
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.set(cx, 0.07, cz);
+      scene.add(plane);
     }
   }
 
-  // --- Gedung balok bervariasi; Menara (pusat) paling tinggi dan padat ---
-  const wallColors = [0xd8cfc0, 0xc0c8d0, 0xe0b48f, 0x8fb8d8, 0xd8d8d8, 0xb8a88f, 0x9fb8a0];
-  const roofMat = new THREE.MeshLambertMaterial({ color: 0x5a5a60 });
-  for (let bx = 0; bx < 8; bx++) {
-    for (let bz = 0; bz < 8; bz++) {
-      const cx = -400 + bx * 100 + 50;
-      const cz = -400 + bz * 100 + 50;
-      const isCenter = Math.abs(cx) <= 200 && Math.abs(cz) <= 200;
-      if (rng() < 0.1) continue; // taman / plaza kosong
-      const n = 2 + (isCenter ? 1 : 0) + (rng() < 0.25 ? 1 : 0);
-      for (let i = 0; i < n; i++) {
-        const w = 18 + rng() * 20;
-        const d = 18 + rng() * 20;
-        const ox = (rng() - 0.5) * (blockSize - w - 12);
-        const oz = (rng() - 0.5) * (blockSize - d - 12);
-        const x = cx + ox;
-        const z = cz + oz;
-        if (rectHitsCorridor(x, z, w / 2 + 2, d / 2 + 2, 0)) continue;
-        const h = isCenter ? 25 + rng() * 45 : 8 + rng() * 22;
-        const mat = new THREE.MeshLambertMaterial({ color: pick(rng, wallColors) });
-        const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-        body.position.set(x, h / 2, z);
-        addMesh(body);
-        const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 1, 1, d + 1), roofMat);
-        roof.position.set(x, h + 0.5, z);
-        addMesh(roof);
-        world.buildings.push({
-          x, z, w, d, h,
-          district: getDistrict(world, x, z),
-        });
+  // Gedung balok bervariasi; Pusat kota (Menara) tertinggi dan terpadat.
+  for (let iz = 0; iz < 10; iz++) {
+    for (let ix = 0; ix < 10; ix++) {
+      if (!blockIsBuildable(ix, iz)) continue;
+      const cx = -450 + ix * 100;
+      const cz = -450 + iz * 100;
+      const district = districtAt(cx, cz);
+      let count;
+      if (district === 'Menara') {
+        count = 2 + (rng() < 0.1 ? 1 : 0);
+      } else {
+        count = 1 + (rng() < 0.1 ? 1 : 0);
+      }
+      const cells = [
+        { ox: -19.5, oz: -19.5 },
+        { ox: 19.5, oz: -19.5 },
+        { ox: -19.5, oz: 19.5 },
+        { ox: 19.5, oz: 19.5 }
+      ];
+      // Acak urutan sel.
+      for (let s = cells.length - 1; s > 0; s--) {
+        const j = Math.floor(rng() * (s + 1));
+        const tmp = cells[s];
+        cells[s] = cells[j];
+        cells[j] = tmp;
+      }
+      for (let n = 0; n < count; n++) {
+        const cell = count === 1 ? { ox: 0, oz: 0 } : cells[n];
+        const w = count === 1 ? 26 + rng() * 18 : 14 + rng() * 12;
+        const d = count === 1 ? 26 + rng() * 18 : 14 + rng() * 12;
+        const h = buildingHeight(rng, district);
+        const color = pick(rng, DISTRICT_COLORS[district]);
+        const bx = cx + cell.ox;
+        const bz = cz + cell.oz;
+        boxMesh(w, h, d, color, bx, h / 2, bz);
+        if (h >= 30) {
+          boxMesh(w * 0.5, 1.5, d * 0.5, 0x616161, bx, h + 0.75, bz);
+        }
+        buildings.push({ x: bx, z: bz, w: w, d: d, h: h, district: district, color: color });
       }
     }
   }
 
-  // --- Properti: palem, lampu, hidran, peti, planter, bangku ---
-  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x7a5a34 });
-  const leafMat = new THREE.MeshLambertMaterial({ color: 0x2e8b3a });
-  const lampPoleMat = new THREE.MeshLambertMaterial({ color: 0x333338 });
-  const lampHeadMat = new THREE.MeshLambertMaterial({ color: 0xffe9a8 });
-  const hydrantMat = new THREE.MeshLambertMaterial({ color: 0xc23b2e });
-  const crateMat = new THREE.MeshLambertMaterial({ color: 0x9a7a4a });
-  const planterMat = new THREE.MeshLambertMaterial({ color: 0x6a6a60 });
-  const benchMat = new THREE.MeshLambertMaterial({ color: 0x8a6a42 });
+  // Properti di trotoar: palem, lampu, hidran, peti, planter, bangku.
+  // Menara paling banyak.
+  const trunkMat = mat(0x6d4c41);
+  const leafMat = mat(0x2e7d32);
+  const poleMat = mat(0x455a64);
+  const lampHeadMat = mat(0xffe082);
+  const hydrantMat = mat(0xc62828);
+  const crateMat = mat(0x8d6e63);
+  const planterMat = mat(0x4e342e);
+  const plantMat = mat(0x43a047);
+  const benchMat = mat(0x795548);
+  const trunkGeo = new THREE.CylinderGeometry(0.25, 0.35, 4, 6);
+  const leafGeo = new THREE.ConeGeometry(2, 1.4, 6);
+  const poleGeo = new THREE.CylinderGeometry(0.12, 0.12, 5, 6);
+  const lampHeadGeo = new THREE.BoxGeometry(0.9, 0.3, 0.3);
+  const hydrantGeo = new THREE.BoxGeometry(0.5, 0.9, 0.5);
+  const crateGeo = new THREE.BoxGeometry(1, 1, 1);
+  const planterGeo = new THREE.BoxGeometry(1.6, 0.6, 0.8);
+  const plantGeo = new THREE.BoxGeometry(1.4, 0.45, 0.6);
+  const benchSeatGeo = new THREE.BoxGeometry(1.8, 0.15, 0.6);
+  const propKinds = ['palm', 'palm', 'palm', 'lamp', 'lamp', 'hydrant', 'crate', 'crate', 'planter', 'bench', 'bench'];
 
   function addProp(kind, x, z) {
-    world.props.push({ kind, x, z });
-  }
-
-  // Lampu di tiap simpang (2 per simpang).
-  for (const node of graph.nodes) {
-    for (const [ox, oz] of [[9, 9], [-9, -9]]) {
-      const x = node.x + ox;
-      const z = node.z + oz;
-      if (inCorridor(x, z, 0)) continue;
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 6, 6), lampPoleMat);
-      pole.position.set(x, 3, z);
-      addMesh(pole);
-      const head = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.3, 0.4), lampHeadMat);
-      head.position.set(x, 6.1, z);
-      addMesh(head);
-      addProp('lampu', x, z);
+    const g = new THREE.Group();
+    if (kind === 'palm') {
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.set(0, 2, 0);
+      g.add(trunk);
+      const leaves = new THREE.Mesh(leafGeo, leafMat);
+      leaves.position.set(0, 4.5, 0);
+      g.add(leaves);
+    } else if (kind === 'lamp') {
+      const pole = new THREE.Mesh(poleGeo, poleMat);
+      pole.position.set(0, 2.5, 0);
+      g.add(pole);
+      const head = new THREE.Mesh(lampHeadGeo, lampHeadMat);
+      head.position.set(0, 5, 0);
+      g.add(head);
+    } else if (kind === 'hydrant') {
+      const body = new THREE.Mesh(hydrantGeo, hydrantMat);
+      body.position.set(0, 0.45, 0);
+      g.add(body);
+    } else if (kind === 'crate') {
+      const crate = new THREE.Mesh(crateGeo, crateMat);
+      crate.position.set(0, 0.5, 0);
+      g.add(crate);
+    } else if (kind === 'planter') {
+      const box = new THREE.Mesh(planterGeo, planterMat);
+      box.position.set(0, 0.3, 0);
+      g.add(box);
+      const plant = new THREE.Mesh(plantGeo, plantMat);
+      plant.position.set(0, 0.8, 0);
+      g.add(plant);
+    } else {
+      const seat = new THREE.Mesh(benchSeatGeo, benchMat);
+      seat.position.set(0, 0.45, 0);
+      g.add(seat);
     }
+    g.position.set(x, 0, z);
+    g.rotation.y = rng() * Math.PI * 2;
+    scene.add(g);
+    props.push({ x: x, z: z, kind: kind });
   }
 
-  // Palem di sepanjang trotoar jalan.
-  for (const line of ROAD_LINES) {
-    for (let v = -375; v <= 375; v += 75) {
-      if (rng() < 0.35) continue;
-      const spots = [
-        { x: line + 9, z: v },
-        { x: v, z: line + 9 },
-      ];
-      for (const s of spots) {
-        if (Math.abs(s.x) > 430 || Math.abs(s.z) > 430) continue;
-        if (inCorridor(s.x, s.z, 0)) continue;
-        if (isBlocked(world, s.x, s.z)) continue;
-        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 5, 6), trunkMat);
-        trunk.position.set(s.x, 2.5, s.z);
-        addMesh(trunk);
-        const leaves = new THREE.Mesh(new THREE.ConeGeometry(2.2, 2.5, 6), leafMat);
-        leaves.position.set(s.x, 6, s.z);
-        addMesh(leaves);
-        addProp('palem', s.x, s.z);
+  for (let iz = 0; iz < 10; iz++) {
+    for (let ix = 0; ix < 10; ix++) {
+      if (!blockIsBuildable(ix, iz)) continue;
+      const cx = -450 + ix * 100;
+      const cz = -450 + iz * 100;
+      const district = districtAt(cx, cz);
+      const count = district === 'Menara' ? 7 : 4 + (rng() < 0.5 ? 1 : 0);
+      for (let n = 0; n < count; n++) {
+        const side = Math.floor(rng() * 4);
+        const along = -36 + rng() * 72;
+        const off = 41 + rng() * 7;
+        let px;
+        let pz;
+        if (side === 0) { px = cx + along; pz = cz - off; }
+        else if (side === 1) { px = cx + along; pz = cz + off; }
+        else if (side === 2) { px = cx - off; pz = cz + along; }
+        else { px = cx + off; pz = cz + along; }
+        if (Math.abs(px) > 495 || Math.abs(pz) > 495) continue;
+        if (inDockCorridor(px, pz)) continue;
+        addProp(pick(rng, propKinds), px, pz);
       }
     }
   }
 
-  // Hidran, peti, planter, bangku tersebar di trotoar.
-  const scatterKinds = [
-    { kind: 'hidran', mat: hydrantMat, geo: () => new THREE.BoxGeometry(0.8, 1.1, 0.8), y: 0.55, n: 40 },
-    { kind: 'peti', mat: crateMat, geo: () => new THREE.BoxGeometry(1.4, 1.4, 1.4), y: 0.7, n: 60 },
-    { kind: 'planter', mat: planterMat, geo: () => new THREE.BoxGeometry(2, 0.8, 2), y: 0.4, n: 50 },
-    { kind: 'bangku', mat: benchMat, geo: () => new THREE.BoxGeometry(2.4, 0.5, 0.8), y: 0.6, n: 40 },
-  ];
-  for (const spec of scatterKinds) {
-    let placed = 0;
-    let tries = 0;
-    while (placed < spec.n && tries < spec.n * 12) {
-      tries++;
-      const line = pick(rng, ROAD_LINES);
-      const along = -400 + rng() * 800;
-      const side = rng() < 0.5 ? 9 : -9;
-      const horizontal = rng() < 0.5;
-      const x = horizontal ? along : line + side;
-      const z = horizontal ? line + side : along;
-      if (Math.abs(x) > 430 || Math.abs(z) > 430) continue;
-      if (inCorridor(x, z, 2)) continue;
-      if (isBlocked(world, x, z)) continue;
-      const mesh = new THREE.Mesh(spec.geo(), spec.mat);
-      mesh.position.set(x, spec.y, z);
-      addMesh(mesh);
-      addProp(spec.kind, x, z);
-      placed++;
+  // Dermaga kayu menuju kapal (lantai yang bisa dilewati, bukan penghalang).
+  const pier = new THREE.Mesh(new THREE.BoxGeometry(90, 0.4, 12), mat(0x8d6e63));
+  pier.position.set(425, 0.2, 350);
+  scene.add(pier);
+
+  // Kapal di (470, 350), radius 12.
+  const ship = new THREE.Group();
+  const hull = new THREE.Mesh(new THREE.BoxGeometry(26, 4, 9), mat(0x37474f));
+  hull.position.set(0, 2, 0);
+  ship.add(hull);
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(24, 0.5, 8), mat(0x8d6e63));
+  deck.position.set(0, 4.2, 0);
+  ship.add(deck);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(8, 4, 6), mat(0xf5f5f5));
+  cabin.position.set(-4, 6.5, 0);
+  ship.add(cabin);
+  const funnel = new THREE.Mesh(new THREE.BoxGeometry(2, 4, 2), mat(0xe65100));
+  funnel.position.set(4, 7, 0);
+  ship.add(funnel);
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 10, 6), mat(0x455a64));
+  mast.position.set(9, 8, 0);
+  ship.add(mast);
+  const bow = new THREE.Mesh(new THREE.BoxGeometry(4, 3, 7), mat(0x37474f));
+  bow.position.set(14, 1.5, 0);
+  ship.add(bow);
+  ship.position.set(SHIP_POSITION.x, 0, SHIP_POSITION.z);
+  scene.add(ship);
+
+  const world = {
+    seed: seed === undefined ? WORLD_SEED : seed,
+    bounds: CITY_BOUNDS,
+    roadWidth: ROAD_WIDTH,
+    sidewalkWidth: SIDEWALK_WIDTH,
+    roadGraph: roadGraph,
+    nodes: roadGraph.nodes,
+    edges: roadGraph.edges,
+    buildings: buildings,
+    props: props,
+    ship: { x: SHIP_POSITION.x, z: SHIP_POSITION.z, radius: SHIP_POSITION.radius },
+    scene: scene,
+    counts: {
+      buildings: buildings.length,
+      props: props.length,
+      nodes: roadGraph.nodes.length,
+      edges: roadGraph.edges.length
     }
-  }
-
-  // --- Kapal di (470, 350) + dermaga ---
-  const pierMat = new THREE.MeshLambertMaterial({ color: 0x8a6a42 });
-  const pier = new THREE.Mesh(new THREE.BoxGeometry(80, 1, 18), pierMat);
-  pier.position.set(430, 0.5, 350);
-  addMesh(pier);
-  const hullMat = new THREE.MeshLambertMaterial({ color: 0x37424e });
-  const hull = new THREE.Mesh(new THREE.BoxGeometry(26, 5, 12), hullMat);
-  hull.position.set(SHIP_X, 2.5, SHIP_Z);
-  addMesh(hull);
-  const deckMat = new THREE.MeshLambertMaterial({ color: 0xd8d0c0 });
-  const deck = new THREE.Mesh(new THREE.BoxGeometry(20, 3, 9), deckMat);
-  deck.position.set(SHIP_X, 6, SHIP_Z);
-  addMesh(deck);
-  const mastMat = new THREE.MeshLambertMaterial({ color: 0x5a4a34 });
-  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 10, 6), mastMat);
-  mast.position.set(SHIP_X - 4, 12, SHIP_Z);
-  addMesh(mast);
-
+  };
+  world.isBlocked = function (x, z) { return isBlocked(world, x, z); };
+  world.nearestRoad = function (x, z) { return nearestRoad(world, x, z); };
+  world.districtAt = function (x, z) { return districtAt(x, z); };
+  world.findRoadPath = function (sx, sz, gx, gz) {
+    return findRoadPath(world, sx, sz, gx, gz);
+  };
+  world.getShipPosition = function () { return getShipPosition(); };
+  world.isDockCorridorClear = function () { return isDockCorridorClear(world); };
+  world.getValidSpawnPositions = function () { return getValidSpawnPositions(world); };
   return world;
 }
 
-// Alias: nama lain pembangun kota.
+export const createCity = buildCity;
 export const buildWorld = buildCity;

@@ -1,304 +1,225 @@
-// KOTA MENTARI — modul pemain: keadaan, gerak jalan kaki, mengemudi,
-// masuk / keluar / curi mobil, dan sinkron arah mobil.
-// Uang tinggal di field `uang`; `money` adalah alias getter/setter-nya.
-// Arah maju: komponen x dari sinus sudut, komponen z dari kosinus sudut.
+// KOTA MENTARI — keadaan pemain Raka Pratama: jalan kaki, mengemudi,
+// masuk/keluar mobil, curi mobil. Arah maju: x dari sinus sudut,
+// z dari kosinus sudut. Uang tinggal di field uang; money adalah alias.
+import * as ConfigMod from './config.js';
+import { isKeyDown, isKeyPressed } from './input.js';
 
-import * as THREE from '../vendor/three.module.min.js';
-import * as configMod from './config.js';
-import { isKeyDown, isPressed } from './input.js';
+const CFG = ConfigMod.CONFIG || ConfigMod.default || {};
+const WALK_SPEED = typeof CFG.walkSpeed === 'number' ? CFG.walkSpeed : 6;
+const RUN_SPEED = typeof CFG.runSpeed === 'number' ? CFG.runSpeed : 10;
+const DRIVE_MAX = typeof CFG.driveMaxSpeed === 'number' ? CFG.driveMaxSpeed : 30;
+const DRIVE_ACCEL = typeof CFG.driveAccel === 'number' ? CFG.driveAccel : 14;
+const WORLD_BOUND = 520;
 
-function cfgValue(names, fallback) {
-  for (const name of names) {
-    if (configMod && typeof configMod[name] !== 'undefined') return configMod[name];
-    if (configMod && configMod.default && typeof configMod.default[name] !== 'undefined') {
-      return configMod.default[name];
-    }
-  }
-  return fallback;
-}
-
-const WALK_SPEED = cfgValue(['WALK_SPEED', 'walkSpeed', 'playerWalkSpeed'], 6);
-const RUN_SPEED = cfgValue(['RUN_SPEED', 'runSpeed', 'playerRunSpeed'], 10);
-const DRIVE_MAX_SPEED = cfgValue(['DRIVE_MAX_SPEED', 'driveMaxSpeed', 'maxDriveSpeed'], 30);
-const DRIVE_REVERSE_SPEED = cfgValue(['DRIVE_REVERSE_SPEED', 'driveReverseSpeed'], 12);
-const DRIVE_ACCEL = cfgValue(['DRIVE_ACCEL', 'driveAccel'], 14);
-const TURN_RATE = cfgValue(['TURN_RATE', 'turnRate'], 2.4);
-const DRIVE_TURN_RATE = cfgValue(['DRIVE_TURN_RATE', 'driveTurnRate'], 1.9);
-const PLAYER_HEALTH = cfgValue(['PLAYER_HEALTH', 'playerHealth', 'maxHealth'], 100);
-const ENTER_CAR_DISTANCE = cfgValue(['ENTER_CAR_DISTANCE', 'enterCarDistance'], 4.5);
-
-// Buat keadaan pemain baru: jalan kaki, nyawa penuh, uang nol.
 export function createPlayer() {
   const player = {
     x: 0,
-    y: 0,
     z: 0,
     angle: 0,
     speed: 0,
-    health: PLAYER_HEALTH,
-    maxHealth: PLAYER_HEALTH,
+    health: 100,
     uang: 0,
     weapon: 'fists',
     inCar: false,
     car: null,
     carHeading: 0,
-    mesh: null,
+    moving: false,
+    running: false,
   };
   Object.defineProperty(player, 'money', {
-    get() {
-      return this.uang;
-    },
-    set(value) {
-      this.uang = value;
-    },
+    get() { return player.uang; },
+    set(v) { player.uang = v; },
     enumerable: true,
     configurable: true,
   });
   return player;
 }
 
-// Arah mobil yang sedang dikemudikan pemain (atau arah mobil terakhir).
+export function addUang(player, amount) {
+  player.uang += amount;
+  return player.uang;
+}
+
+function clampToWorld(player) {
+  if (player.x > WORLD_BOUND) player.x = WORLD_BOUND;
+  if (player.x < -WORLD_BOUND) player.x = -WORLD_BOUND;
+  if (player.z > WORLD_BOUND) player.z = WORLD_BOUND;
+  if (player.z < -WORLD_BOUND) player.z = -WORLD_BOUND;
+}
+
+function carX(car) {
+  if (typeof car.x === 'number') return car.x;
+  if (car.position && typeof car.position.x === 'number') return car.position.x;
+  return 0;
+}
+
+function carZ(car) {
+  if (typeof car.z === 'number') return car.z;
+  if (car.position && typeof car.position.z === 'number') return car.position.z;
+  return 0;
+}
+
+function carAngleOf(car) {
+  if (typeof car.angle === 'number') return car.angle;
+  if (typeof car.heading === 'number') return car.heading;
+  return 0;
+}
+
 export function getCarHeading(player) {
-  if (!player) return 0;
-  if (player.car && typeof player.car.heading === 'number') return player.car.heading;
+  if (player.car) return carAngleOf(player.car);
   return player.carHeading || 0;
 }
 
-// Atur arah mobil dan arah pemain sekaligus (selalu sinkron).
 export function setCarHeading(player, heading) {
-  if (!player) return;
   player.carHeading = heading;
-  if (player.car) player.car.heading = heading;
-  player.angle = heading;
+  if (player.car) {
+    player.car.angle = heading;
+    player.car.heading = heading;
+  }
+  return heading;
 }
 
-// Cari mobil terdekat dari posisi pemain di dalam konteks.
-function findNearbyCar(player, ctx, maxDistance) {
-  if (!ctx) return null;
-  if (typeof ctx.getNearbyCar === 'function') {
-    return ctx.getNearbyCar(player.x, player.z, maxDistance);
+function syncCarToPlayer(player) {
+  const car = player.car;
+  if (!car) return;
+  car.x = player.x;
+  car.z = player.z;
+  car.angle = player.angle;
+  car.heading = player.angle;
+  if (car.position) {
+    car.position.x = player.x;
+    car.position.z = player.z;
   }
-  const cars = ctx.cars || [];
+}
+
+function collectCars(ctx) {
+  const cars = [];
+  if (ctx && ctx.traffic && Array.isArray(ctx.traffic.cars)) {
+    for (const c of ctx.traffic.cars) cars.push(c);
+  }
+  if (ctx && typeof ctx.getMissionCar === 'function') {
+    try {
+      const mc = ctx.getMissionCar();
+      if (mc) cars.push(mc);
+    } catch (err) { /* abaikan */ }
+  }
+  if (ctx && typeof ctx.getCars === 'function') {
+    try {
+      const extra = ctx.getCars();
+      if (Array.isArray(extra)) {
+        for (const c of extra) cars.push(c);
+      }
+    } catch (err) { /* abaikan */ }
+  }
+  return cars;
+}
+
+function findNearestCar(player, ctx, radius) {
   let best = null;
-  let bestDist = maxDistance;
-  for (const car of cars) {
-    if (!car) continue;
-    const dx = car.x - player.x;
-    const dz = car.z - player.z;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    if (dist < bestDist) {
-      bestDist = dist;
+  let bestD = Infinity;
+  for (const car of collectCars(ctx)) {
+    const dx = carX(car) - player.x;
+    const dz = carZ(car) - player.z;
+    const d = Math.hypot(dx, dz);
+    if (d < radius && d < bestD) {
       best = car;
+      bestD = d;
     }
   }
   return best;
 }
 
-// Masuk ke mobil: sinkronkan arah mobil dan arah pemain.
-export function enterCar(player, car) {
-  if (!player || !car) return false;
+export function enterCar(player, car, ctx) {
+  if (!car) return false;
+  if (!car.stolen) {
+    car.stolen = true;
+    if (ctx && typeof ctx.addWanted === 'function') {
+      try { ctx.addWanted(1); } catch (err) { /* abaikan */ }
+    }
+    if (ctx && typeof ctx.showToast === 'function') {
+      try { ctx.showToast('Mobil dicuri! Polisi waspada.'); } catch (err) { /* abaikan */ }
+    }
+  }
   player.inCar = true;
   player.car = car;
-  car.driver = player;
-  setCarHeading(player, typeof car.heading === 'number' ? car.heading : player.angle);
-  player.speed = car.speed || 0;
-  if (player.mesh) player.mesh.visible = false;
+  player.angle = carAngleOf(car);
+  player.carHeading = player.angle;
+  setCarHeading(player, player.angle);
+  player.x = carX(car);
+  player.z = carZ(car);
+  player.speed = 0;
   return true;
 }
 
-// Keluar dari mobil: pemain berdiri di sisi mobil, arah tetap sinkron.
 export function exitCar(player) {
-  if (!player || !player.inCar) return false;
+  if (!player.inCar || !player.car) return false;
   const car = player.car;
+  player.angle = carAngleOf(car);
+  const cx = carX(car);
+  const cz = carZ(car);
+  // Turun di sisi mobil (tegak lurus arah maju).
+  player.x = cx + Math.cos(player.angle) * 2.4;
+  player.z = cz - Math.sin(player.angle) * 2.4;
+  player.speed = 0;
   player.inCar = false;
   player.car = null;
-  if (car) {
-    car.driver = null;
-    car.speed = 0;
-    const sideX = Math.cos(player.angle);
-    const sideZ = -Math.sin(player.angle);
-    player.x = car.x + sideX * 2.6;
-    player.z = car.z + sideZ * 2.6;
-  }
-  player.speed = 0;
-  if (player.mesh) player.mesh.visible = true;
   return true;
 }
 
-// Curi mobil: tandai curian, naikkan wanted +1 lewat konteks, lalu masuk.
-export function stealCar(player, car, ctx) {
-  if (!player || !car) return false;
-  const firstTheft = !car.stolenByPlayer;
-  car.stolen = true;
-  car.stolenByPlayer = true;
-  if (firstTheft && ctx && typeof ctx.addWanted === 'function') {
-    ctx.addWanted(1);
-  }
-  if (ctx && typeof ctx.showToast === 'function') {
-    ctx.showToast('Mobil dicuri! Polisi mengejarmu.');
-  }
-  const entered = enterCar(player, car);
-  // Beri tahu modul misi (Misi 2 menunggu onCarStolen); hook dijaga
-  // di missions.js (hanya berlaku saat misi aktif adalah Misi 2).
-  if (entered && ctx && typeof ctx.onCarStolen === 'function') {
-    ctx.onCarStolen();
-  }
-  return entered;
-}
-
-// Kurangi nyawa pemain; kembalikan nyawa sisa.
-export function damagePlayer(player, amount) {
-  if (!player) return 0;
-  player.health = Math.max(0, (player.health || 0) - amount);
-  return player.health;
-}
-
-// Tambah nyawa pemain (tidak melebihi maksimum).
-export function healPlayer(player, amount) {
-  if (!player) return 0;
-  player.health = Math.min(player.maxHealth || 100, (player.health || 0) + amount);
-  return player.health;
-}
-
-export function isPlayerAlive(player) {
-  return !!player && (player.health || 0) > 0;
-}
-
-function updateWalking(player, dt) {
-  const running =
-    isKeyDown('ShiftLeft') || isKeyDown('ShiftRight') || isKeyDown('Shift');
-  const maxSpeed = running ? RUN_SPEED : WALK_SPEED;
-  let move = 0;
-  if (isKeyDown('KeyW') || isKeyDown('ArrowUp')) move += 1;
-  if (isKeyDown('KeyS') || isKeyDown('ArrowDown')) move -= 1;
-  let turn = 0;
-  if (isKeyDown('KeyA') || isKeyDown('ArrowLeft')) turn += 1;
-  if (isKeyDown('KeyD') || isKeyDown('ArrowRight')) turn -= 1;
-  player.angle += turn * TURN_RATE * dt;
-  const targetSpeed = move * maxSpeed;
-  player.speed += (targetSpeed - player.speed) * Math.min(1, dt * 10);
-  player.x += Math.sin(player.angle) * player.speed * dt;
-  player.z += Math.cos(player.angle) * player.speed * dt;
-}
-
-function updateDriving(player, dt) {
+function updateDriving(player, dt, ctx) {
   const car = player.car;
   if (!car) {
     player.inCar = false;
     return;
   }
-  let throttle = 0;
-  if (isKeyDown('KeyW') || isKeyDown('ArrowUp')) throttle += 1;
-  if (isKeyDown('KeyS') || isKeyDown('ArrowDown')) throttle -= 0.6;
+  const accel = (isKeyDown('KeyW') || isKeyDown('ArrowUp') ? 1 : 0)
+    - (isKeyDown('KeyS') || isKeyDown('ArrowDown') ? 1 : 0);
+  const steer = (isKeyDown('KeyA') || isKeyDown('ArrowLeft') ? 1 : 0)
+    - (isKeyDown('KeyD') || isKeyDown('ArrowRight') ? 1 : 0);
   const handbrake = isKeyDown('Space');
-  if (handbrake) {
-    car.speed -= car.speed * Math.min(1, dt * 6);
-    if (Math.abs(car.speed) < 0.2) car.speed = 0;
+  if (accel > 0) {
+    player.speed += DRIVE_ACCEL * dt;
+  } else if (accel < 0) {
+    player.speed -= DRIVE_ACCEL * 0.7 * dt;
   } else {
-    car.speed += throttle * DRIVE_ACCEL * dt;
-    car.speed -= car.speed * dt * 0.35;
-    if (car.speed > DRIVE_MAX_SPEED) car.speed = DRIVE_MAX_SPEED;
-    if (car.speed < -DRIVE_REVERSE_SPEED) car.speed = -DRIVE_REVERSE_SPEED;
+    player.speed -= player.speed * 1.2 * dt;
   }
-  let steer = 0;
-  if (isKeyDown('KeyA') || isKeyDown('ArrowLeft')) steer += 1;
-  if (isKeyDown('KeyD') || isKeyDown('ArrowRight')) steer -= 1;
-  const speedFactor = Math.min(1, Math.abs(car.speed) / 8);
-  const direction = car.speed >= 0 ? 1 : -1;
-  car.heading = (car.heading || 0) + steer * DRIVE_TURN_RATE * dt * speedFactor * direction;
-  car.x += Math.sin(car.heading) * car.speed * dt;
-  car.z += Math.cos(car.heading) * car.speed * dt;
-  player.x = car.x;
-  player.z = car.z;
-  player.angle = car.heading;
-  player.carHeading = car.heading;
-  player.speed = car.speed;
+  if (handbrake) player.speed -= player.speed * 4 * dt;
+  if (player.speed > DRIVE_MAX) player.speed = DRIVE_MAX;
+  if (player.speed < -9) player.speed = -9;
+  if (Math.abs(player.speed) < 0.05 && accel === 0) player.speed = 0;
+  const dir = player.speed >= 0 ? 1 : -1;
+  player.angle += steer * 1.9 * dt * Math.min(1, Math.abs(player.speed) / 8) * dir;
+  player.carHeading = player.angle;
+  player.x += Math.sin(player.angle) * player.speed * dt;
+  player.z += Math.cos(player.angle) * player.speed * dt;
+  clampToWorld(player);
+  syncCarToPlayer(player);
+  if (isKeyPressed('KeyE')) exitCar(player);
 }
 
-function handleEnterExit(player, ctx) {
-  if (!isPressed('KeyE') && !isPressed('e')) return;
-  if (player.inCar) {
-    exitCar(player);
-    return;
-  }
-  const car = findNearbyCar(player, ctx, ENTER_CAR_DISTANCE);
-  if (!car) {
-    if (ctx && typeof ctx.showToast === 'function') {
-      ctx.showToast('Tidak ada mobil di dekatmu.');
-    }
-    return;
-  }
-  if (car.stolenByPlayer || car.isPlayerCar) {
-    enterCar(player, car);
-  } else {
-    stealCar(player, car, ctx);
-  }
-}
-
-function syncPlayerMesh(player) {
-  if (!player.mesh) return;
-  player.mesh.visible = !player.inCar;
-  if (player.inCar) return;
-  player.mesh.position.set(player.x, player.y || 0, player.z);
-  player.mesh.rotation.y = player.angle;
-}
-
-// Perbarui pemain tiap frame: jalan kaki atau mengemudi, plus tombol E.
 export function updatePlayer(player, dt, ctx) {
-  if (!player || !isPlayerAlive(player)) return;
-  if (player.inCar && player.car) {
-    updateDriving(player, dt);
-  } else {
-    updateWalking(player, dt);
+  if (!player || player.health <= 0) return;
+  if (player.inCar) {
+    updateDriving(player, dt, ctx);
+    return;
   }
-  handleEnterExit(player, ctx);
-  syncPlayerMesh(player);
-}
-
-// Bentuk 3D pemain jalan kaki: kemeja oranye, celana gelap.
-export function buildPlayerMesh() {
-  const group = new THREE.Group();
-  const skin = new THREE.MeshLambertMaterial({ color: 0xc98d5f });
-  const shirt = new THREE.MeshLambertMaterial({ color: 0xff7a1a });
-  const pants = new THREE.MeshLambertMaterial({ color: 0x22242e });
-  const shoes = new THREE.MeshLambertMaterial({ color: 0x111111 });
-
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.72, 0.34), shirt);
-  torso.position.y = 1.08;
-  group.add(torso);
-
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.36, 0.34), skin);
-  head.position.y = 1.66;
-  group.add(head);
-
-  const legLeft = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.72, 0.28), pants);
-  legLeft.position.set(-0.16, 0.36, 0);
-  group.add(legLeft);
-
-  const legRight = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.72, 0.28), pants);
-  legRight.position.set(0.16, 0.36, 0);
-  group.add(legRight);
-
-  const armLeft = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.62, 0.2), shirt);
-  armLeft.position.set(-0.42, 1.08, 0);
-  group.add(armLeft);
-
-  const armRight = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.62, 0.2), shirt);
-  armRight.position.set(0.42, 1.08, 0);
-  group.add(armRight);
-
-  const shoeLeft = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.12, 0.4), shoes);
-  shoeLeft.position.set(-0.16, 0.06, 0.04);
-  group.add(shoeLeft);
-
-  const shoeRight = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.12, 0.4), shoes);
-  shoeRight.position.set(0.16, 0.06, 0.04);
-  group.add(shoeRight);
-
-  return group;
-}
-
-// Alias nama pembangun mesh pemain.
-export function createPlayerMesh() {
-  return buildPlayerMesh();
+  const fwd = (isKeyDown('KeyW') || isKeyDown('ArrowUp') ? 1 : 0)
+    - (isKeyDown('KeyS') || isKeyDown('ArrowDown') ? 0.6 : 0);
+  const turn = (isKeyDown('KeyA') || isKeyDown('ArrowLeft') ? 1 : 0)
+    - (isKeyDown('KeyD') || isKeyDown('ArrowRight') ? 1 : 0);
+  const running = isKeyDown('ShiftLeft') || isKeyDown('ShiftRight');
+  const target = running ? RUN_SPEED : WALK_SPEED;
+  player.running = running && fwd !== 0;
+  if (turn !== 0) player.angle += turn * 2.4 * dt;
+  const sp = fwd !== 0 ? target * fwd : 0;
+  player.speed += (sp - player.speed) * Math.min(1, dt * 10);
+  player.moving = Math.abs(player.speed) > 0.3;
+  player.x += Math.sin(player.angle) * player.speed * dt;
+  player.z += Math.cos(player.angle) * player.speed * dt;
+  clampToWorld(player);
+  if (isKeyPressed('KeyE')) {
+    const car = findNearestCar(player, ctx, 4);
+    if (car) enterCar(player, car, ctx);
+  }
 }
