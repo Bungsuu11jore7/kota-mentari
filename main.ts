@@ -1,23 +1,36 @@
-// Make GTA 6 — program entri untuk game "KOTA MENTARI".
-// Menyalin game/ dan screenshots/ ke folder output, lalu menulis
-// dossier.json dengan buildDossier dari vendor/makefun-game.ts.
-// Berjalan dua kali menghasilkan byte dossier yang identik.
-import { cpSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { buildDossier } from "./vendor/makefun-game.ts";
+// KOTA MENTARI — entri "Make GTA 6": program penyerah (Node 22, erasable TS).
+// Menyalin game/ + screenshots/ dari samping file ini ke folder output,
+// lalu menulis /output/dossier.json lewat buildDossier dari vendor
+// (vendor tidak diubah). Di luar grader, MAKEFUN_OUTPUT_DIR menggantikan
+// /output:
+//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-const repoRoot = dirname(fileURLToPath(import.meta.url));
-const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
-const gameDir = join(repoRoot, "game");
-const screenshotsDir = join(repoRoot, "screenshots");
+import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildDossier } from './vendor/makefun-game.ts';
 
-mkdirSync(outputDir, { recursive: true });
-cpSync(gameDir, join(outputDir, "game"), { recursive: true });
-if (existsSync(screenshotsDir)) {
-  cpSync(screenshotsDir, join(outputDir, "screenshots"), { recursive: true });
+const here = fileURLToPath(new URL('.', import.meta.url));
+const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+
+mkdirSync(out, { recursive: true });
+cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
+mkdirSync(join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(here, 'screenshots'))) {
+  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
 }
 
-const dossier = buildDossier(repoRoot, { text_max_bytes: 163840 });
-writeFileSync(join(outputDir, "dossier.json"), dossier);
-console.log("dossier written: " + join(outputDir, "dossier.json"));
+// Batas scorer (reference/gate.json): hanya text_max_bytes yang membentuk
+// byte dossier; batas lain menolak entri yang scorer akan tolak (lebih
+// dari 4 screenshot atau satu di atas 256 KiB; lebih dari 993 file di
+// game/ atau 48 MiB file game, atau path di bawah game/ di atas 1000 byte).
+writeFileSync(
+  join(out, 'dossier.json'),
+  buildDossier(out, {
+    text_max_bytes: 163840,
+    screenshots: { max: 4, max_bytes: 262144 },
+    game_max_files: 993,
+    game_max_bytes: 50331648,
+    game_path_max_bytes: 1000,
+  }),
+);
