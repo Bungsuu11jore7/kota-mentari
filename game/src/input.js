@@ -1,78 +1,119 @@
-// KOTA MENTARI — input: keyboard dan mouse.
-// Satu-satunya modul yang menyentuh pendengar DOM. initInput dipanggil
-// tepat satu kali oleh modul utama (dijaga flag di sini dan di sana).
-const keysDown = new Set();
-const keysPressed = new Set();
-let lastClick = null;
-let clickQueue = null;
-let mouseX = 0;
-let mouseY = 0;
-let initialized = false;
+// KOTA MENTARI — modul input: keyboard dan mouse.
+// Satu-satunya sumber status tombol untuk pemain, tempur, dan loop utama.
+// Tombol: WASD jalan/mobil, Shift lari, E masuk/keluar/curi mobil,
+// Space handbrake, F pukul, klik mouse tembak, 1/2 ganti senjata,
+// P/Esc jeda, M bisu, Enter mulai.
 
-export function initInput() {
-  if (initialized) return true;
-  initialized = true;
-  window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' || e.code.indexOf('Arrow') === 0) {
-      try { e.preventDefault(); } catch (err) { /* abaikan */ }
-    }
-    if (!e.repeat && !keysDown.has(e.code)) keysPressed.add(e.code);
-    keysDown.add(e.code);
-  });
-  window.addEventListener('keyup', (e) => {
-    keysDown.delete(e.code);
-  });
-  window.addEventListener('blur', () => {
-    keysDown.clear();
-  });
-  const target = document.getElementById('game-canvas') || window;
-  target.addEventListener('mousedown', (e) => {
-    mouseX = e.clientX || 0;
-    mouseY = e.clientY || 0;
-    const click = { x: mouseX, y: mouseY, button: e.button || 0, time: Date.now() };
-    lastClick = click;
-    clickQueue = click;
-  });
-  window.addEventListener('mousemove', (e) => {
-    mouseX = e.clientX || 0;
-    mouseY = e.clientY || 0;
-  });
-  window.addEventListener('contextmenu', (e) => {
-    try { e.preventDefault(); } catch (err) { /* abaikan */ }
-  });
-  return true;
+const keysDown = new Map();
+const keysPressed = new Set();
+const mouseState = {
+  x: 0,
+  y: 0,
+  button: -1,
+  down: false,
+  clicked: false,
+  justClicked: false,
+};
+const lastClick = { x: 0, y: 0, button: 0, time: 0 };
+
+let inputInitialized = false;
+
+export const inputState = {
+  keys: keysDown,
+  pressed: keysPressed,
+  mouse: mouseState,
+  lastClick,
+  get initialized() {
+    return inputInitialized;
+  },
+};
+
+function noteKeyDown(event) {
+  const code = event.code || event.key || '';
+  if (!code) return;
+  if (code === 'Space' || code.indexOf('Arrow') === 0) {
+    if (typeof event.preventDefault === 'function') event.preventDefault();
+  }
+  if (!event.repeat) keysPressed.add(code);
+  keysDown.set(code, true);
 }
 
-export function isKeyDown(code) {
+function noteKeyUp(event) {
+  const code = event.code || event.key || '';
+  if (!code) return;
+  keysDown.delete(code);
+}
+
+function noteMouseDown(event) {
+  mouseState.x = event.clientX || 0;
+  mouseState.y = event.clientY || 0;
+  mouseState.button = typeof event.button === 'number' ? event.button : 0;
+  mouseState.down = true;
+  mouseState.clicked = true;
+  mouseState.justClicked = true;
+  lastClick.x = mouseState.x;
+  lastClick.y = mouseState.y;
+  lastClick.button = mouseState.button;
+  lastClick.time = Date.now();
+}
+
+function noteMouseUp(event) {
+  mouseState.down = false;
+  if (typeof event.button === 'number') mouseState.button = event.button;
+}
+
+function noteMouseMove(event) {
+  mouseState.x = event.clientX || 0;
+  mouseState.y = event.clientY || 0;
+}
+
+export function initInput() {
+  if (inputInitialized) return inputState;
+  inputInitialized = true;
+  if (typeof window !== 'undefined' && window && typeof window.addEventListener === 'function') {
+    window.addEventListener('keydown', noteKeyDown);
+    window.addEventListener('keyup', noteKeyUp);
+    window.addEventListener('mousedown', noteMouseDown);
+    window.addEventListener('mouseup', noteMouseUp);
+    window.addEventListener('mousemove', noteMouseMove);
+    window.addEventListener('blur', () => {
+      keysDown.clear();
+      mouseState.down = false;
+    });
+  }
+  if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+    document.addEventListener('keydown', noteKeyDown);
+    document.addEventListener('keyup', noteKeyUp);
+  }
+  return inputState;
+}
+
+export function isInputInitialized() {
+  return inputInitialized;
+}
+
+export function isDown(code) {
   return keysDown.has(code);
 }
 
-export function isKeyPressed(code) {
+export function isPressed(code) {
   return keysPressed.has(code);
-}
-
-// Dipanggil modul utama di akhir tiap frame: tombol "baru ditekan" hanya
-// berlaku satu frame.
-export function clearPressed() {
-  keysPressed.clear();
 }
 
 export function getLastClick() {
   return lastClick;
 }
 
-// Mengambil satu klik mouse yang belum dipakai (tembak), lalu mengosongkan
-// antrean supaya satu klik tidak menembak dua kali.
-export function consumeClick() {
-  const click = clickQueue;
-  clickQueue = null;
-  return click;
+export function isMouseClicked() {
+  return mouseState.justClicked;
 }
 
 export function getMouse() {
-  return { x: mouseX, y: mouseY };
+  return mouseState;
 }
 
-export function isInitialized() {
-  return initialized;
+export function endFrameInput() {
+  keysPressed.clear();
+  mouseState.justClicked = false;
+  mouseState.clicked = false;
 }

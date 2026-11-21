@@ -1,289 +1,337 @@
-// KOTA MENTARI — modul HUD (tampilan layar + minimap + toast).
-// API module-level: initHud, showScreen, drawHud, showToast, clearToasts,
-// getCurrentScreen. Nama layar: 'start' | 'playing' | 'paused' | 'complete' | 'busted'.
-// Teks objective SELALU dibaca dari keadaan misi aktif pada tiap frame —
-// tidak pernah di-cache sekali di awal.
+// KOTA MENTARI — modul HUD (layar, panel status, minimap, toast).
+// API module-level (BEKU): initHud, showScreen, drawHud, showToast,
+// clearToasts, getCurrentScreen. HUD hanya menampilkan — tanpa logika game.
 
 const SAVE_KEY = "kota-mentari-save";
-const WORLD_HALF = 520;
+const TOAST_MS = 3200;
+const WORLD_EXTENT = 550;
+const SCREEN_IDS = {
+  start: "screen-start",
+  paused: "screen-paused",
+  complete: "screen-complete",
+  busted: "screen-busted",
+};
 
-let callbacks = null;
 let currentScreen = "start";
+let callbacks = {};
+let hudReady = false;
+let lastMoney = 0;
 let lastSnapshot = null;
-let toastTimer = null;
-const toastQueue = [];
+const toastTimers = [];
 
-const $ = (id) => document.getElementById(id);
+function el(id) {
+  return document.getElementById(id);
+}
 
-function screenEl(name) {
-  if (name === "start") return $("screen-start");
-  if (name === "paused") return $("screen-paused");
-  if (name === "complete") return $("screen-complete");
-  if (name === "busted") return $("screen-busted");
+function setText(id, value) {
+  const node = el(id);
+  if (node) node.textContent = value;
+}
+
+function clampNumber(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
+
+function formatMoney(value) {
+  return "$" + Math.floor(Number(value) || 0).toLocaleString("id-ID");
+}
+
+function weaponLabel(value) {
+  const map = { fist: "Tinju", tinju: "Tinju", pistol: "Pistol" };
+  if (typeof value === "string" && value.length > 0) {
+    const key = value.toLowerCase();
+    if (map[key]) return map[key];
+    return value.charAt(0).toUpperCase() + value.slice(1);
+  }
+  return "Tinju";
+}
+
+function posOf(unit) {
+  if (!unit) return null;
+  if (Number.isFinite(unit.x) && Number.isFinite(unit.z)) {
+    return { x: unit.x, z: unit.z };
+  }
+  const p = unit.position || unit.pos;
+  if (p && Number.isFinite(p.x) && Number.isFinite(p.z)) {
+    return { x: p.x, z: p.z };
+  }
   return null;
 }
 
-function hideAllScreens() {
-  for (const name of ["start", "paused", "complete", "busted"]) {
-    const el = screenEl(name);
-    if (el) el.classList.add("hidden");
-  }
-  const hud = $("hud");
-  if (hud) hud.classList.add("hidden");
-}
-
-// SATU fungsi manajer layar: sembunyikan SEMUA elemen dulu, baru tampilkan yang diminta.
-export function showScreen(name, data) {
-  currentScreen = name;
-  hideAllScreens();
-  if (name === "playing") {
-    const hud = $("hud");
-    if (hud) hud.classList.remove("hidden");
-    return;
-  }
-  const el = screenEl(name);
-  if (!el) return;
-  if (name === "start") {
-    const cont = $("btn-continue");
-    let hasSave = false;
-    try { hasSave = !!localStorage.getItem(SAVE_KEY); } catch (_e) { hasSave = false; }
-    if (cont) cont.classList.toggle("hidden", !hasSave);
-  }
-  if (name === "complete") {
-    const money = (data && (data.uang ?? data.money)) ??
-      (lastSnapshot && lastSnapshot.player && (lastSnapshot.player.uang ?? lastSnapshot.player.money)) ?? 0;
-    const moneyEl = $("complete-money");
-    if (moneyEl) moneyEl.textContent = "$" + Math.floor(money).toLocaleString("en-US");
-    const objEl = $("complete-objective");
-    if (objEl) objEl.textContent = "Semua misi selesai!";
-    drawCompleteMinimap();
-  }
-  el.classList.remove("hidden");
-}
-
-export function getCurrentScreen() {
-  return currentScreen;
-}
-
-export function initHud(cb) {
-  callbacks = cb || {};
-  const bind = (id, fn) => {
-    const el = $(id);
-    if (el && typeof fn === "function") el.addEventListener("click", fn);
-  };
-  bind("btn-start", () => callbacks.onStart && callbacks.onStart());
-  bind("btn-continue", () => callbacks.onContinue && callbacks.onContinue());
-  bind("btn-resume", () => callbacks.onResume && callbacks.onResume());
-  bind("btn-retry", () => callbacks.onRetry && callbacks.onRetry());
-  bind("btn-play-again", () => callbacks.onPlayAgain && callbacks.onPlayAgain());
-  bind("btn-quit-pause", () => callbacks.onQuitToMenu && callbacks.onQuitToMenu());
-  bind("btn-quit-busted", () => callbacks.onQuitToMenu && callbacks.onQuitToMenu());
-  bind("btn-quit-complete", () => callbacks.onQuitToMenu && callbacks.onQuitToMenu());
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && currentScreen === "start" && callbacks.onStart) {
-      callbacks.onStart();
+// Misi aktif — SELALU dibaca segar dari keadaan misi saat itu (tanpa cache).
+function activeMission(state) {
+  if (!state || typeof state !== "object") return null;
+  if (typeof state.getActiveMission === "function") {
+    try {
+      const m = state.getActiveMission();
+      if (m) return m;
+    } catch (err) {
+      // Misi tidak tersedia — jatuh ke bentuk keadaan lain di bawah.
     }
-  });
-  showScreen("start");
-}
-
-// ---- Objective: dibaca segar dari keadaan misi aktif SETIAP frame ----
-function missionObjectOf(snapshot) {
-  if (!snapshot) return null;
-  const ms = snapshot.missionState ?? snapshot.mission ?? snapshot.state?.mission ?? null;
-  if (!ms) return null;
-  if (typeof ms === "object" && Array.isArray(ms.missions)) {
-    const idx = typeof ms.current === "number" ? ms.current : 0;
-    return ms.missions[idx] || ms.missions[0] || null;
   }
-  if (typeof ms === "object" && (ms.objective || ms.text || ms.title || ms.name)) return ms;
-  if (typeof ms === "object" && ms.currentMission) return ms.currentMission;
-  if (typeof ms === "object" && typeof ms.current === "number" && Array.isArray(snapshot.missions)) {
-    return snapshot.missions[ms.current] || null;
+  if (state.activeMission) return state.activeMission;
+  if (Array.isArray(state.missions) && Number.isInteger(state.current)) {
+    return state.missions[state.current] || null;
   }
+  if (state.current && typeof state.current === "object") return state.current;
   return null;
 }
 
-function objectiveTextOf(snapshot) {
-  if (!snapshot) return "Mulai petualanganmu di Kota Mentari.";
-  if (typeof snapshot.objective === "string" && snapshot.objective) return snapshot.objective;
-  const m = missionObjectOf(snapshot);
+function missionTitle(state) {
+  const m = activeMission(state);
   if (m) {
-    if (typeof m.objective === "string" && m.objective) return m.objective;
-    if (typeof m.text === "string" && m.text) return m.text;
-    if (typeof m.description === "string" && m.description) return m.description;
-    if (typeof m.title === "string" && m.title) return m.title;
-    if (typeof m.name === "string" && m.name) return m.name;
+    if (typeof m === "string") return m;
+    if (typeof m.title === "string") return m.title;
+    if (typeof m.name === "string") return m.name;
   }
-  const ms = snapshot.missionState;
-  if (ms && typeof ms.objectiveText === "string" && ms.objectiveText) return ms.objectiveText;
-  if (ms && typeof ms.current === "number") {
-    const names = ["Paket Kilat", "Mobil Pinjaman", "Kejar Bayangan", "Tolong Mira", "Brankas Pelabuhan", "Jalan Pulang"];
-    return names[ms.current] || "Selesaikan misi.";
-  }
-  return "Selesaikan misi.";
+  if (state && typeof state.title === "string") return state.title;
+  return "Misi";
 }
 
-function missionTitleOf(snapshot) {
-  const m = missionObjectOf(snapshot);
-  if (m && typeof m.title === "string" && m.title) return m.title.toUpperCase();
-  if (m && typeof m.name === "string" && m.name) return m.name.toUpperCase();
-  const ms = snapshot.missionState;
-  if (ms && typeof ms.current === "number") {
-    const names = ["Paket Kilat", "Mobil Pinjaman", "Kejar Bayangan", "Tolong Mira", "Brankas Pelabuhan", "Jalan Pulang"];
-    return (names[ms.current] || "MISI").toUpperCase();
+function missionObjective(state) {
+  const m = activeMission(state);
+  if (m) {
+    if (typeof m === "string") return m;
+    if (typeof m.objective === "string") return m.objective;
+    if (typeof m.text === "string") return m.text;
+    if (typeof m.description === "string") return m.description;
+    if (typeof m.title === "string") return m.title;
+    if (typeof m.name === "string") return m.name;
   }
-  return "MISI";
+  if (state && typeof state.objective === "string") return state.objective;
+  return "Selesaikan misi di Kota Mentari.";
 }
 
 function markerOf(snapshot) {
-  if (!snapshot) return null;
-  if (snapshot.marker && typeof snapshot.marker.x === "number") return snapshot.marker;
-  if (snapshot.target && typeof snapshot.target.x === "number") return snapshot.target;
-  const ms = snapshot.missionState ?? snapshot.mission ?? null;
-  if (ms && ms.marker && typeof ms.marker.x === "number") return ms.marker;
-  const m = missionObjectOf(snapshot);
-  if (m && m.marker && typeof m.marker.x === "number") return m.marker;
-  if (m && typeof m.x === "number" && typeof m.z === "number") return m;
-  return null;
+  const fromState = (state) => {
+    if (!state || typeof state !== "object") return null;
+    if (state.marker) return posOf(state.marker);
+    if (state.target) return posOf(state.target);
+    const m = activeMission(state);
+    if (m && typeof m === "object") {
+      if (m.target) return posOf(m.target);
+      if (m.marker) return posOf(m.marker);
+      if (m.position) return posOf(m.position);
+      if (Number.isFinite(m.x) && Number.isFinite(m.z)) return { x: m.x, z: m.z };
+    }
+    return null;
+  };
+  return (
+    posOf(snapshot.marker) ||
+    posOf(snapshot.target) ||
+    fromState(snapshot.missionState) ||
+    fromState(snapshot.missions) ||
+    null
+  );
 }
 
-function drawMinimapOn(canvas, snapshot) {
-  if (!canvas) return;
+function drawMinimap(canvas, snapshot) {
+  if (!canvas || !snapshot) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const w = canvas.width;
   const h = canvas.height;
-  ctx.fillStyle = "#0a1420";
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#0d1b12";
   ctx.fillRect(0, 0, w, h);
-  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
   ctx.lineWidth = 1;
-  for (let i = 1; i < 6; i++) {
-    ctx.beginPath(); ctx.moveTo((w / 6) * i, 0); ctx.lineTo((w / 6) * i, h); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, (h / 6) * i); ctx.lineTo(w, (h / 6) * i); ctx.stroke();
+  const step = w / 8;
+  for (let i = 1; i < 8; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * step, 0);
+    ctx.lineTo(i * step, h);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, i * step);
+    ctx.lineTo(w, i * step);
+    ctx.stroke();
   }
-  ctx.fillStyle = "#fff";
-  ctx.font = "bold 13px sans-serif";
-  ctx.textAlign = "center";
-  ctx.fillText("N", w / 2, 15);
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 11px sans-serif";
+  ctx.fillText("N", w / 2 - 4, 13);
   const toMap = (x, z) => [
-    ((x + WORLD_HALF) / (WORLD_HALF * 2)) * w,
-    ((z + WORLD_HALF) / (WORLD_HALF * 2)) * h,
+    ((x + WORLD_EXTENT) / (2 * WORLD_EXTENT)) * w,
+    ((z + WORLD_EXTENT) / (2 * WORLD_EXTENT)) * h,
   ];
   const marker = markerOf(snapshot);
   if (marker) {
     const [mx, my] = toMap(marker.x, marker.z);
-    ctx.fillStyle = "#ffd75e";
-    ctx.save();
-    ctx.translate(mx, my);
-    ctx.rotate(Math.PI / 4);
-    ctx.fillRect(-6, -6, 12, 12);
-    ctx.restore();
+    ctx.fillStyle = "#ffd166";
+    ctx.beginPath();
+    ctx.moveTo(mx, my - 6);
+    ctx.lineTo(mx + 6, my);
+    ctx.lineTo(mx, my + 6);
+    ctx.lineTo(mx - 6, my);
+    ctx.closePath();
+    ctx.fill();
   }
   const police = snapshot.police || snapshot.policeState?.units || [];
   if (Array.isArray(police)) {
-    ctx.fillStyle = "#ff4444";
-    for (const u of police) {
-      if (!u || typeof u.x !== "number") continue;
-      const [px, py] = toMap(u.x, u.z ?? 0);
-      ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#ff4d4d";
+    for (const unit of police) {
+      const p = posOf(unit);
+      if (!p) continue;
+      const [px, py] = toMap(p.x, p.z);
+      ctx.beginPath();
+      ctx.arc(px, py, 3, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
-  const player = snapshot.player;
-  if (player && typeof player.x === "number") {
-    const [px, py] = toMap(player.x, player.z ?? 0);
-    const angle = typeof snapshot.playerAngle === "number" ? snapshot.playerAngle : 0;
+  const playerPos = posOf(snapshot.player);
+  if (playerPos) {
+    const [px, py] = toMap(playerPos.x, playerPos.z);
+    const angle = Number(snapshot.playerAngle) || 0;
     ctx.save();
     ctx.translate(px, py);
-    ctx.rotate(angle);
-    ctx.fillStyle = "#fff";
+    ctx.rotate(Math.PI - angle);
+    ctx.fillStyle = "#ffffff";
     ctx.beginPath();
-    ctx.moveTo(0, -8); ctx.lineTo(6, 6); ctx.lineTo(-6, 6); ctx.closePath();
+    ctx.moveTo(0, -7);
+    ctx.lineTo(5, 6);
+    ctx.lineTo(-5, 6);
+    ctx.closePath();
     ctx.fill();
     ctx.restore();
   }
 }
 
-function drawCompleteMinimap() {
-  drawMinimapOn($("complete-minimap"), lastSnapshot || {});
-}
-
-// ---- Toast: antrean dengan pewaktu sendiri, render langsung ----
-function renderToasts() {
-  const box = $("toast-container");
+function paintStars(wanted) {
+  const box = el("wanted-stars");
   if (!box) return;
-  box.innerHTML = "";
-  for (const text of toastQueue) {
-    const div = document.createElement("div");
-    div.className = "toast";
-    div.textContent = text;
-    box.appendChild(div);
+  const stars = box.children;
+  for (let i = 0; i < stars.length; i++) {
+    if (i < wanted) stars[i].classList.add("on");
+    else stars[i].classList.remove("on");
   }
 }
 
-function scheduleToastClear() {
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toastQueue.shift();
-    renderToasts();
-    if (toastQueue.length > 0) scheduleToastClear();
-  }, 3500);
+function refreshContinueButton() {
+  const btn = el("btn-continue");
+  if (!btn) return;
+  let hasSave = false;
+  try {
+    hasSave = window.localStorage.getItem(SAVE_KEY) !== null;
+  } catch (err) {
+    hasSave = false;
+  }
+  btn.style.display = hasSave ? "" : "none";
 }
 
-export function showToast(text) {
-  if (!text) return;
-  toastQueue.push(String(text));
-  if (toastQueue.length > 3) toastQueue.shift();
-  renderToasts();
-  scheduleToastClear();
+function fillCompleteScreen(data) {
+  const money =
+    data?.uang ?? data?.money ?? data?.finalMoney ?? lastMoney ?? 0;
+  setText("final-money", formatMoney(money));
+  setText("complete-objective", "Semua misi selesai!");
+  drawMinimap(el("complete-minimap"), lastSnapshot);
 }
 
-export function clearToasts() {
-  toastQueue.length = 0;
-  if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
-  renderToasts();
+function showScreen(name, data) {
+  if (!SCREEN_IDS[name] && name !== "playing") return;
+  currentScreen = name;
+  const hud = el("hud");
+  for (const [key, id] of Object.entries(SCREEN_IDS)) {
+    const node = el(id);
+    if (node) node.style.display = key === name ? "flex" : "none";
+  }
+  if (hud) hud.style.display = name === "playing" ? "block" : "none";
+  if (name === "start") refreshContinueButton();
+  if (name === "complete") fillCompleteScreen(data);
 }
 
-// ---- Gambar HUD tiap frame: perbarui SEMUA elemen ----
-export function drawHud(snapshot) {
-  if (!snapshot) return;
+function drawHud(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") return;
   lastSnapshot = snapshot;
-  if (currentScreen !== "playing") return;
-  const hud = $("hud");
-  if (hud) hud.classList.remove("hidden");
-
+  const hud = el("hud");
+  if (hud && currentScreen === "playing") hud.style.display = "block";
   const player = snapshot.player || {};
-  const speed = snapshot.speedKmh ?? snapshot.speed ?? 0;
-  const speedEl = $("speed");
-  if (speedEl) speedEl.innerHTML = Math.round(speed) + " <small>km/jam</small>";
-
-  const money = player.uang ?? player.money ?? snapshot.uang ?? snapshot.money ?? 0;
-  const moneyEl = $("money");
-  if (moneyEl) moneyEl.textContent = "$" + Math.floor(money).toLocaleString("en-US");
-
-  const health = player.health ?? player.nyawa ?? 100;
-  const maxHealth = player.maxHealth ?? player.maxNyawa ?? 100;
-  const fill = $("health-fill");
-  if (fill) fill.style.width = Math.max(0, Math.min(100, (health / maxHealth) * 100)) + "%";
-
-  const weapon = player.weapon ?? player.senjata ?? "Tinju";
-  const weaponEl = $("weapon");
-  if (weaponEl) weaponEl.textContent = weapon;
-
-  const wanted = snapshot.policeState?.wanted ?? snapshot.wanted ?? 0;
-  const stars = document.querySelectorAll("#wanted .star");
-  stars.forEach((star) => {
-    const n = Number(star.getAttribute("data-star"));
-    star.classList.toggle("lit", n <= wanted);
-  });
-
-  // Objective dibaca segar dari misi aktif setiap frame — tanpa cache.
-  const titleEl = $("mission-title");
-  if (titleEl) titleEl.textContent = missionTitleOf(snapshot);
-  const textEl = $("mission-text");
-  if (textEl) textEl.textContent = objectiveTextOf(snapshot);
-
-  drawMinimapOn($("minimap"), snapshot);
-
-  if (typeof snapshot.toast === "string" && snapshot.toast) showToast(snapshot.toast);
+  const money =
+    player.uang ?? player.money ?? snapshot.uang ?? snapshot.money ?? lastMoney;
+  lastMoney = Number(money) || 0;
+  setText("money-value", Math.floor(lastMoney).toLocaleString("id-ID"));
+  const health = clampNumber(
+    player.nyawa ?? player.health ?? snapshot.health ?? 100,
+    0,
+    100,
+  );
+  const fill = el("health-fill");
+  if (fill) fill.style.width = health + "%";
+  setText("health-text", String(Math.round(health)));
+  setText(
+    "weapon-name",
+    weaponLabel(player.weapon ?? player.senjata ?? snapshot.weapon),
+  );
+  const wanted = Math.round(
+    clampNumber(
+      snapshot.policeState?.wanted ??
+        snapshot.policeState?.level ??
+        snapshot.wanted ??
+        0,
+      0,
+      5,
+    ),
+  );
+  paintStars(wanted);
+  const speed = snapshot.speedKmh ?? snapshot.speed ?? player.speedKmh ?? 0;
+  setText("speed-value", String(Math.max(0, Math.round(Number(speed) || 0))));
+  setText("mission-title", (snapshot.mission && snapshot.mission.name) || missionTitle(snapshot.missionState));
+  setText("mission-objective", (typeof snapshot.objective === "string" && snapshot.objective) || missionObjective(snapshot.missionState));
+  drawMinimap(el("minimap"), snapshot);
 }
+
+function showToast(text) {
+  if (text === undefined || text === null) return;
+  const box = el("toast-container");
+  if (!box) return;
+  const node = document.createElement("div");
+  node.className = "toast";
+  node.textContent = String(text);
+  box.appendChild(node);
+  while (box.children.length > 3) box.removeChild(box.firstChild);
+  const timer = setTimeout(() => {
+    node.remove();
+  }, TOAST_MS);
+  toastTimers.push(timer);
+}
+
+function clearToasts() {
+  const box = el("toast-container");
+  if (box) box.innerHTML = "";
+  for (const timer of toastTimers) clearTimeout(timer);
+  toastTimers.length = 0;
+}
+
+function getCurrentScreen() {
+  return currentScreen;
+}
+
+function bind(id, handler) {
+  const node = el(id);
+  if (node) node.addEventListener("click", handler);
+}
+
+function initHud(cb) {
+  callbacks = cb || {};
+  if (hudReady) return;
+  hudReady = true;
+  bind("btn-start", () => callbacks.onStart?.());
+  bind("btn-continue", () => callbacks.onContinue?.());
+  bind("btn-resume", () => callbacks.onResume?.());
+  bind("btn-retry", () => callbacks.onRetry?.());
+  bind("btn-play-again", () => callbacks.onPlayAgain?.());
+  bind("btn-quit-paused", () => callbacks.onQuitToMenu?.());
+  bind("btn-quit-busted", () => callbacks.onQuitToMenu?.());
+  bind("btn-quit-complete", () => callbacks.onQuitToMenu?.());
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && currentScreen === "start") {
+      callbacks.onStart?.();
+    }
+  });
+  refreshContinueButton();
+}
+
+export { initHud, showScreen, drawHud, showToast, clearToasts, getCurrentScreen };

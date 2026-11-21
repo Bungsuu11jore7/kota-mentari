@@ -1,89 +1,104 @@
-// KOTA MENTARI — vehicles.js
-// Pembuat mobil: badan balok + kabin + roda hitam, warna bervariasi.
-// Jenis: normal, polisi (hitam-putih + palang lampu), target (oranye terang).
+// KOTA MENTARI — pembuat mobil (Lane B, v12)
+// Mobil balok: badan + kabin + 4 roda hitam. Polisi hitam-putih berpalang
+// lampu; mobil target oranye terang. Arah maju mengikuti (sin, cos) sudut.
 import * as THREE from '../vendor/three.module.min.js';
-import { findRoadPath, nearestRoad } from './world.js';
+import { findRoadPath, nearestNodeId, edgeCrossesCorridor } from './world.js';
 
-export const TARGET_COLOR = 0xff6a00;
-export const POLICE_COLOR = 0xf5f5f5;
+export const TARGET_COLOR = 0xff7f00; // oranye terang (mobil target misi)
+export const POLICE_BODY = 0xf5f5f5;
+export const POLICE_TRIM = 0x141414;
 
-export const CAR_COLORS = [
-  0xd32f2f, 0x1976d2, 0xfbc02d, 0x7b1fa2, 0x00796b,
-  0xe0e0e0, 0x37474f, 0x8d6e63, 0x43a047, 0xfb8c00,
-  0x5d4037, 0x00838f, 0xc0ca33, 0x6a1b9a, 0xad1457
+const BODY_COLORS = [
+  0xc0392b, 0x2980b9, 0xf1c40f, 0x27ae60, 0x8e44ad,
+  0xe67e22, 0xecf0f1, 0x2c3e50, 0x16a085, 0xd35400, 0x7f8c8d,
 ];
 
-const GLASS_COLOR = 0x16242e;
-const WHEEL_COLOR = 0x111111;
-const bodyGeo = new THREE.BoxGeometry(3.6, 0.9, 1.8);
-const cabinGeo = new THREE.BoxGeometry(2.0, 0.75, 1.6);
-const doorGeo = new THREE.BoxGeometry(1.6, 0.7, 1.84);
-const wheelGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.3, 10);
-const lightBarGeo = new THREE.BoxGeometry(0.5, 0.2, 0.55);
-const headGeo = new THREE.BoxGeometry(0.1, 0.2, 0.3);
-const tailGeo = new THREE.BoxGeometry(0.1, 0.2, 0.3);
-
-const matCache = new Map();
-function mat(color) {
-  if (!matCache.has(color)) {
-    matCache.set(color, new THREE.MeshLambertMaterial({ color: color }));
-  }
-  return matCache.get(color);
+export function randomBodyColor(rng) {
+  const r = rng || Math.random;
+  return BODY_COLORS[Math.floor(r() * BODY_COLORS.length)];
 }
 
-// Pembuat mobil. makeCar(warna, jenis) -> THREE.Group.
-export function makeCar(color, type) {
-  const kind = type || 'normal';
-  let bodyColor = color;
+// ---- Pembuat mobil: createCar(color, type) ----
+// type: 'sedan' | 'police' | 'target' | 'taxi' | 'truck'
+export function createCar(color, type) {
+  const kind = type || 'sedan';
+  let bodyColor = color === undefined ? randomBodyColor() : color;
+  if (kind === 'police') bodyColor = POLICE_BODY;
   if (kind === 'target') bodyColor = TARGET_COLOR;
-  if (kind === 'police') bodyColor = POLICE_COLOR;
-  if (bodyColor === undefined || bodyColor === null) {
-    bodyColor = CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)];
-  }
-  const group = new THREE.Group();
 
-  const body = new THREE.Mesh(bodyGeo, mat(bodyColor));
-  body.position.set(0, 0.55, 0);
+  const group = new THREE.Group();
+  const bodyMat = new THREE.MeshLambertMaterial({ color: bodyColor });
+  const glassMat = new THREE.MeshLambertMaterial({ color: 0x1a2733 });
+  const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+
+  // Badan (panjang di sumbu z: maju = +z saat heading 0)
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.9, 4.4), bodyMat);
+  body.position.y = 0.75;
   group.add(body);
 
-  if (kind === 'police') {
-    const doors = new THREE.Mesh(doorGeo, mat(0x111111));
-    doors.position.set(0.1, 0.55, 0);
-    group.add(doors);
-  }
-
-  const cabin = new THREE.Mesh(cabinGeo, mat(kind === 'police' ? 0x111111 : GLASS_COLOR));
-  cabin.position.set(-0.2, 1.3, 0);
+  // Kabin kaca
+  const cabinColor = kind === 'police' ? POLICE_TRIM : 0x1a2733;
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(1.8, 0.8, 2.2),
+    new THREE.MeshLambertMaterial({ color: cabinColor })
+  );
+  cabin.position.set(0, 1.55, -0.2);
   group.add(cabin);
 
-  if (kind === 'police') {
-    const red = new THREE.Mesh(lightBarGeo, mat(0xd50000));
-    red.position.set(-0.2, 1.78, -0.3);
-    group.add(red);
-    const blue = new THREE.Mesh(lightBarGeo, mat(0x0d47a1));
-    blue.position.set(-0.2, 1.78, 0.3);
-    group.add(blue);
-  }
-
-  const wheelMat = mat(WHEEL_COLOR);
+  // Roda hitam (4)
+  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 10);
   const wheelSpots = [
-    [1.2, 0.85], [1.2, -0.85], [-1.2, 0.85], [-1.2, -0.85]
+    [-0.95, 1.5], [0.95, 1.5], [-0.95, -1.5], [0.95, -1.5],
   ];
-  for (let i = 0; i < wheelSpots.length; i++) {
+  for (const [wx, wz] of wheelSpots) {
     const wheel = new THREE.Mesh(wheelGeo, wheelMat);
-    wheel.rotation.x = Math.PI / 2;
-    wheel.position.set(wheelSpots[i][0], 0.35, wheelSpots[i][1]);
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(wx, 0.42, wz);
     group.add(wheel);
   }
 
-  const headMat = mat(0xfff9c4);
-  for (let s = -1; s <= 1; s += 2) {
-    const head = new THREE.Mesh(headGeo, headMat);
-    head.position.set(1.82, 0.6, 0.55 * s);
-    group.add(head);
-    const tail = new THREE.Mesh(tailGeo, mat(0xb71c1c));
-    tail.position.set(-1.82, 0.6, 0.55 * s);
-    group.add(tail);
+  if (kind === 'police') {
+    // Panel hitam di kap depan + bagasi
+    const hood = new THREE.Mesh(
+      new THREE.BoxGeometry(2.02, 0.12, 1.0),
+      new THREE.MeshLambertMaterial({ color: POLICE_TRIM })
+    );
+    hood.position.set(0, 1.22, 1.6);
+    group.add(hood);
+    const trunk = new THREE.Mesh(
+      new THREE.BoxGeometry(2.02, 0.12, 0.9),
+      new THREE.MeshLambertMaterial({ color: POLICE_TRIM })
+    );
+    trunk.position.set(0, 1.22, -1.7);
+    group.add(trunk);
+    // Palang lampu merah-biru di atap kabin
+    const barBase = new THREE.Mesh(
+      new THREE.BoxGeometry(1.4, 0.18, 0.4),
+      new THREE.MeshLambertMaterial({ color: 0x222222 })
+    );
+    barBase.position.set(0, 2.05, -0.2);
+    group.add(barBase);
+    const red = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, 0.22, 0.42),
+      new THREE.MeshLambertMaterial({ color: 0xff2222 })
+    );
+    red.position.set(-0.35, 2.05, -0.2);
+    group.add(red);
+    const blue = new THREE.Mesh(
+      new THREE.BoxGeometry(0.6, 0.22, 0.42),
+      new THREE.MeshLambertMaterial({ color: 0x2244ff })
+    );
+    blue.position.set(0.35, 2.05, -0.2);
+    group.add(blue);
+  }
+
+  if (kind === 'taxi') {
+    const sign = new THREE.Mesh(
+      new THREE.BoxGeometry(0.7, 0.25, 0.4),
+      new THREE.MeshLambertMaterial({ color: 0xf1c40f })
+    );
+    sign.position.set(0, 2.05, -0.2);
+    group.add(sign);
   }
 
   group.userData.type = kind;
@@ -91,100 +106,93 @@ export function makeCar(color, type) {
   return group;
 }
 
-// Keadaan mobil: posisi, arah, kecepatan, jalur, status curian.
-export function makeCarState(group, x, z, heading, speed) {
+// ---- Keadaan mobil ----
+export function createCarState(mesh, x, z, heading, speed) {
   return {
-    group: group,
-    mesh: group,
+    mesh: mesh || null,
     x: x || 0,
     z: z || 0,
     heading: heading || 0,
     speed: speed || 0,
-    type: (group.userData && group.userData.type) || 'normal',
-    color: (group.userData && group.userData.color) || 0x999999,
     stolen: false,
+    type: (mesh && mesh.userData && mesh.userData.type) || 'sedan',
+    color: (mesh && mesh.userData && mesh.userData.color) || 0xc0392b,
     path: null,
     pathIndex: 0,
-    target: null
   };
 }
 
-export const createCarState = makeCarState;
-
-// Munculkan mobil di titik jalan valid. spawnCar(world, scene, jenis, warna, x, z).
-export function spawnCar(world, scene, type, color, x, z, rngFn) {
-  if (!world || !scene) {
-    throw new Error('spawnCar membutuhkan world dan scene');
-  }
-  const rng = rngFn || Math.random;
-  let px = x;
-  let pz = z;
-  if (px === undefined || px === null || pz === undefined || pz === null) {
-    const spots = world.getValidSpawnPositions
-      ? world.getValidSpawnPositions()
-      : world.roadGraph.nodes;
-    const spot = spots[Math.floor(rng() * spots.length)];
-    px = spot.x;
-    pz = spot.z;
-  }
-  const near = nearestRoad(world, px, pz);
-  px = near.x;
-  pz = near.z;
-  const kind = type || 'normal';
-  let carColor = color;
-  if (carColor === undefined || carColor === null) {
-    if (kind === 'target') carColor = TARGET_COLOR;
-    else if (kind === 'police') carColor = POLICE_COLOR;
-    else carColor = CAR_COLORS[Math.floor(rng() * CAR_COLORS.length)];
-  }
-  const group = makeCar(carColor, kind);
-  const headings = [0, Math.PI / 2, Math.PI, -Math.PI / 2];
-  const heading = headings[Math.floor(rng() * headings.length)];
-  group.position.set(px, 0, pz);
-  group.rotation.y = heading;
-  scene.add(group);
-  const car = makeCarState(group, px, pz, heading, 0);
-  car.type = kind;
-  return car;
+export function syncCarMesh(state) {
+  if (!state.mesh) return;
+  state.mesh.position.set(state.x, 0, state.z);
+  state.mesh.rotation.y = state.heading;
 }
 
-// Gerakkan mobil sepanjang jalan menuju titik jalan berikutnya.
-// Bila jalur habis, pilih tujuan simpul acak baru lewat graf jalan.
-export function driveCar(car, dt, world, rngFn) {
-  if (!car || !world) return;
-  const rng = rngFn || Math.random;
-  if (car.speed === 0 || car.speed === undefined || car.speed === null) {
-    car.speed = 10;
+// ---- Pemuncul mobil di titik jalan ----
+export function spawnCarOnRoad(world, scene, color, type, rng) {
+  if (!world || !world.graph) throw new Error('spawnCarOnRoad: world dengan graf jalan wajib diberikan');
+  if (!scene || typeof scene.add !== 'function') {
+    throw new Error('spawnCarOnRoad: scene wajib diberikan');
   }
-  if (!car.path || car.pathIndex >= car.path.length) {
-    const nodes = world.roadGraph.nodes;
-    const dest = nodes[Math.floor(rng() * nodes.length)];
-    car.path = findRoadPath(world, car.x, car.z, dest.x, dest.z);
-    car.pathIndex = 1;
-    car.target = dest;
-    if (!car.path || car.path.length < 2) return;
+  const r = rng || Math.random;
+  const graph = world.graph;
+  let edge = null;
+  let tries = 0;
+  while (tries < 60) {
+    tries += 1;
+    const e = graph.edges[Math.floor(r() * graph.edges.length)];
+    const a = graph.nodes[e.a];
+    const b = graph.nodes[e.b];
+    if (edgeCrossesCorridor(a.x, a.z, b.x, b.z)) continue;
+    edge = e;
+    break;
   }
-  const wp = car.path[car.pathIndex];
-  if (!wp) return;
-  const dx = wp.x - car.x;
-  const dz = wp.z - car.z;
-  const dist = Math.sqrt(dx * dx + dz * dz);
-  if (dist < 0.01) {
-    car.pathIndex++;
-    return;
+  if (!edge) throw new Error('spawnCarOnRoad: tidak ada ruas jalan valid');
+  const a = graph.nodes[edge.a];
+  const b = graph.nodes[edge.b];
+  const t = 0.15 + r() * 0.7;
+  const x = a.x + (b.x - a.x) * t;
+  const z = a.z + (b.z - a.z) * t;
+  const heading = Math.atan2(b.x - a.x, b.z - a.z);
+  const mesh = createCar(color, type);
+  scene.add(mesh);
+  const state = createCarState(mesh, x, z, heading, 6 + r() * 5);
+  state.fromNode = edge.a;
+  state.toNode = edge.b;
+  syncCarMesh(state);
+  return state;
+}
+
+// ---- Penggerak mobil sepanjang jalan ----
+export function driveCarAlongRoad(state, dt, world) {
+  if (!state || !world || !world.graph) return;
+  if (state.stolen === true) return; // mobil curian dikemudikan pemain
+  const step = state.speed * dt;
+  if (!state.path || state.pathIndex >= state.path.length) {
+    // Pilih tujuan simpul acak, cari jalur lewat graf jalan.
+    const graph = world.graph;
+    const dest = graph.nodes[Math.floor(Math.random() * graph.nodes.length)];
+    const path = findRoadPath(world, state.x, state.z, dest.x, dest.z);
+    if (!path || path.length < 2) return;
+    state.path = path;
+    state.pathIndex = 1;
   }
-  const step = car.speed * dt;
-  if (step >= dist) {
-    car.x = wp.x;
-    car.z = wp.z;
-    car.pathIndex++;
+  const target = state.path[state.pathIndex];
+  const dx = target.x - state.x;
+  const dz = target.z - state.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist <= Math.max(step, 0.5)) {
+    state.x = target.x;
+    state.z = target.z;
+    state.pathIndex += 1;
   } else {
-    car.x += (dx / dist) * step;
-    car.z += (dz / dist) * step;
+    const nx = dx / dist;
+    const nz = dz / dist;
+    state.x += nx * step;
+    state.z += nz * step;
+    state.heading = Math.atan2(nx, nz);
   }
-  car.heading = Math.atan2(dx, dz);
-  car.group.position.set(car.x, 0, car.z);
-  car.group.rotation.y = car.heading;
+  syncCarMesh(state);
 }
 
-export const updateCar = driveCar;
+export default createCar;

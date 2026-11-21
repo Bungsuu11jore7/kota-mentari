@@ -1,56 +1,43 @@
-// KOTA MENTARI — generator acak berbiji (deterministik).
-// Benih sama selalu menghasilkan urutan yang sama, supaya kota dan
-// penempatan traffic identik di setiap muat. Dipakai modul dunia dan traffic.
+// KOTA MENTARI — random.js
+// Generator acak berbiji (deterministik): benih sama -> urutan sama.
+// Dipakai penempatan dunia dan traffic supaya kota identik antar muat.
 
-// Pembuat generator dari satu angka benih.
-export function makeRng(seed) {
-  let a = (seed >>> 0) || 1;
-
-  // Bilangan desimal berikutnya dalam [0, 1).
-  function next() {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-
+export function createRng(seed) {
+  let state = (seed >>> 0) || 1;
   return {
-    next,
-
-    // Bilangan bulat dalam [min, max] (inklusif).
-    int(min, max) {
-      const lo = Math.ceil(min);
-      const hi = Math.floor(max);
-      return lo + Math.floor(next() * (hi - lo + 1));
-    },
-
-    // Bilangan desimal dalam [min, max).
-    float(min, max) {
-      return min + next() * (max - min);
-    },
-
-    // Satu unsur acak dari daftar (daftar tidak diubah).
-    pick(list) {
-      if (!list || list.length === 0) return undefined;
-      return list[Math.floor(next() * list.length)];
-    },
-
-    // Salinan daftar dengan urutan teracak (daftar asli tidak diubah).
-    shuffle(list) {
-      const arr = list.slice();
-      for (let i = arr.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(next() * (i + 1));
-        const tmp = arr[i];
-        arr[i] = arr[j];
-        arr[j] = tmp;
-      }
-      return arr;
+    seed,
+    next() {
+      state = (state + 0x6d2b79f5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     },
   };
 }
 
-// Generator default dunia: benih tetap 7.
-export function makeWorldRng() {
-  return makeRng(7);
+export function rngFloat(rng, min, max) {
+  return min + rng.next() * (max - min);
+}
+
+export function rngInt(rng, min, max) {
+  const lo = Math.ceil(min);
+  const hi = Math.floor(max);
+  return lo + Math.floor(rng.next() * (hi - lo + 1));
+}
+
+export function rngPick(rng, list) {
+  if (!list || list.length === 0) return undefined;
+  return list[Math.floor(rng.next() * list.length)];
+}
+
+export function rngShuffle(rng, list) {
+  const out = list.slice();
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng.next() * (i + 1));
+    const tmp = out[i];
+    out[i] = out[j];
+    out[j] = tmp;
+  }
+  return out;
 }
