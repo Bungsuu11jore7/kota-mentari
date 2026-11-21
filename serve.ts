@@ -1,11 +1,14 @@
-// KOTA MENTARI — peladen dev statis (Node 22, tanpa dependensi).
-// Melayani folder game/ di http://localhost:8080 untuk playtest lokal.
+// KOTA MENTARI — peladen lokal kecil untuk memainkan game dari folder game/.
+// Jalankan: node serve.ts — lalu buka http://localhost:8080 di Chrome desktop.
 import { createServer } from "node:http";
-import { createReadStream, statSync } from "node:fs";
-import { join, extname, normalize } from "node:path";
-const ROOT = join(process.cwd(), "game");
-const PORT = Number(process.env.PORT) || 8080;
-const TYPES = {
+import { readFile } from "node:fs/promises";
+import { extname, join, normalize, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(join(fileURLToPath(new URL(".", import.meta.url)), "game"));
+const port = Number(process.env.PORT ?? 8080);
+
+const types: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".mjs": "text/javascript; charset=utf-8",
@@ -17,31 +20,30 @@ const TYPES = {
   ".svg": "image/svg+xml",
   ".wasm": "application/wasm",
 };
-const server = createServer((req, res) => {
-  const raw = decodeURIComponent(req.url || "/").split("?")[0];
-  const path = raw === "/" ? "/index.html" : raw;
-  const file = join(ROOT, normalize(path).replace(/^(\.\.[/\\])+/, ""));
-  if (!file.startsWith(ROOT)) {
-    res.writeHead(403);
-    res.end("Forbidden");
-    return;
-  }
-  let info;
+
+const server = createServer(async (req, res) => {
   try {
-    info = statSync(file);
-  } catch (_e) {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    let rel = decodeURIComponent(url.pathname);
+    if (rel === "/") rel = "/index.html";
+    const cleaned = normalize(rel).replace(/^(\.\.[/\\])+/, "");
+    const file = resolve(join(root, cleaned));
+    if (file !== root && !file.startsWith(root + sep)) {
+      res.writeHead(403);
+      res.end("Forbidden");
+      return;
+    }
+    const data = await readFile(file);
+    res.writeHead(200, {
+      "Content-Type": types[extname(file)] ?? "application/octet-stream",
+    });
+    res.end(data);
+  } catch {
     res.writeHead(404);
     res.end("Not found");
-    return;
   }
-  if (!info.isFile()) {
-    res.writeHead(404);
-    res.end("Not found");
-    return;
-  }
-  res.writeHead(200, { "content-type": TYPES[extname(file)] || "application/octet-stream", "content-length": info.size });
-  createReadStream(file).pipe(res);
 });
-server.listen(PORT, () => {
-  console.log("KOTA MENTARI dev server: http://localhost:" + PORT);
+
+server.listen(port, () => {
+  console.log(`KOTA MENTARI di http://localhost:${port}`);
 });

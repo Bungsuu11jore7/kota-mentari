@@ -1,54 +1,54 @@
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/Bungsuu11jore7/kota-mentari/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/Bungsuu11jore7/kota-mentari/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
 # KOTA MENTARI
 
-[![make.fun](https://img.shields.io/badge/make.fun-gta6--01-blue)](https://make.fun/c/gta6-01)
-[![Prize $1,666](https://img.shields.io/badge/prize-%241%2C666-gold)](https://make.fun/c/gta6-01)
-[![Open World](https://img.shields.io/badge/open--world-3D%20crime-green)](https://make.fun/c/gta6-01)
+Game dunia terbuka 3D yang berjalan offline di peramban desktop — kota pesisir tropis fiktif yang bisa dijelajahi dengan berjalan kaki maupun mengemudi.
 
-**KOTA MENTARI** — game open-world crime 3D yang berjalan offline di browser desktop,
-dibangun untuk bounty [gta6-01 di make.fun](https://make.fun/c/gta6-01) (total hadiah $1.666,
-100 tempat berbayar, deadline 24 November 2026).
+Kamu adalah **Raka Pratama**, kurir 28 tahun di Kota Mentari. Bos Darma dan Geng Ombak menguasai jalanan, dan hanya Mira Santosa yang masih percaya padamu.
+Selesaikan 6 misi berurutan, kumpulkan uang, dan kabur dengan kapal di ujung cerita.
 
-Raka Pratama, 28 tahun, kurir paket di kota pesisir tropis fiktif Kota Mentari.
-Satu paket terakhir mengubah segalanya: Bos Darma dan Geng Ombak memburu Mira Santosa,
-dan hanya Raka yang bisa membawanya pulang.
+## Cara main
 
-## Yang ada di dalam game
+Buka `game/index.html` lewat peladen statis apa pun, misalnya `node serve.ts`, lalu buka http://localhost:8080 di Chrome desktop.
 
-- Kota pesisir tropis dengan 5 distrik: Pelabuhan, Pasar Lama, Menara, Pesisir, Bukit
-- Jalan kaki dan mengemudi, curi mobil, traffic 28 mobil + 45 pejalan kaki
-- Sistem wanted 0–5 bintang dengan polisi yang merespons, roadblock, dan BUSTED
-- 6 misi berurutan dengan cerita, hadiah kumulatif $500 → $29.700
-- Combat: pukul (F) dan tembak (klik mouse), senjata tinju + pistol
-- HUD lengkap: nyawa, uang, senjata, bintang wanted, kecepatan, minimap, kotak misi, toast
-- Save/load via localStorage, audio WebAudio, musik latar
-- Layar mulai / jeda / TAMAT / BUSTED
+## Misi
+
+1. **Paket Kilat** — antar 3 paket ke Menara. Hadiah $500.
+2. **Mobil Pinjaman** — curi mobil oranye di (100, 0), bawa ke Pesisir. Hadiah $1.200.
+3. **Kejar Bayangan** — kejar target yang melarikan diri sampai ke Pesisir. Hadiah $2.000.
+4. **Tolong Mira** — selamatkan Mira di (-200, 100) dari 3 penyerang Geng Ombak. Hadiah $3.000.
+5. **Brankas Pelabuhan** — ambil brankas di Pelabuhan (400, 300). Hadiah $8.000.
+6. **Jalan Pulang** — kabur ke kapal di (470, 350). Hadiah $15.000.
+
+Uang akhir bila semua misi selesai: **$29.700**.
 
 ## Kontrol
 
 | Tombol | Aksi |
-| --- | --- |
-| WASD | Jalan / mengemudi |
+| ------ | ---- |
+| W A S D | Jalan / mengemudi |
 | Shift | Lari |
 | E | Masuk / keluar / curi mobil |
-| Space | Rem tangan |
+| Spasi | Rem tangan |
 | F | Pukul |
 | Klik mouse | Tembak |
 | 1 / 2 | Tinju / pistol |
-| P / Esc | Jeda |
-| M | Bisu |
+| P atau Esc | Jeda |
+| M | Bisukan suara |
 | Enter | Mulai dari layar awal |
 
-## Mainkan
+## Fitur
 
-```sh
-node serve.ts
-# buka http://localhost:8080
-```
+- Kota 3D dengan 5 distrik: Pelabuhan, Pasar Lama, Menara, Pesisir, dan Bukit.
+- Lalu lintas 28 mobil dan 45 pejalan kaki, sistem wanted 0–5 bintang, dan polisi yang mengejar.
+- Simpan / muat otomatis lewat peramban (localStorage).
+- HUD lengkap: nyawa, uang, senjata, bintang wanted, kecepatan, minimap, dan kotak misi.
+- Suara disintesis WebAudio tanpa file suara; semua aset dibuat sendiri, tanpa aset komersial.
 
-Game murni file statis di `game/` — tanpa build step, tanpa request jaringan.
-`main.ts` (Node 22) menyalin `game/` + `screenshots/` ke folder output dan
-menulis `dossier.json` lewat `buildDossier` dari `vendor/makefun-game.ts`.
+## Kompetisi
 
-## Lisensi
+Entri untuk bounty [gta6-01 di make.fun](https://make.fun/bounty/gta6-01) — game dunia terbuka paling lengkap yang bisa dibuat agen dalam seminggu.
 
-MIT — lihat [LICENSE](LICENSE).
+Lisensi: MIT — lihat `LICENSE`.

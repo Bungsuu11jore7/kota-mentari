@@ -1,15 +1,19 @@
-// Make GTA 6 — KOTA MENTARI entry program (Node 22, erasable TypeScript).
-// Copies game/ and screenshots/ to the output folder and writes dossier.json
-// with buildDossier from the kit vendor library (vendor/makefun-game.ts).
-import { cpSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+// KOTA MENTARI — program entri untuk kompetisi "Make GTA 6" (make.fun).
+// Menyalin game/ + screenshots/ ke folder output, lalu menulis dossier.json
+// memakai buildDossier dari vendor (vendor tidak diubah).
+import { cp, mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildDossier } from "./vendor/makefun-game.ts";
 
-const outDir: string = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+const repoRoot = dirname(fileURLToPath(import.meta.url));
+const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
 
-mkdirSync(outDir, { recursive: true });
-cpSync("game", join(outDir, "game"), { recursive: true });
-cpSync("screenshots", join(outDir, "screenshots"), { recursive: true });
-const dossier: Uint8Array = buildDossier(outDir, { text_max_bytes: 163840 });
-writeFileSync(join(outDir, "dossier.json"), dossier);
-console.log("KOTA MENTARI dossier written to " + join(outDir, "dossier.json"));
+await mkdir(outDir, { recursive: true });
+await cp(join(repoRoot, "game"), join(outDir, "game"), { recursive: true });
+await cp(join(repoRoot, "screenshots"), join(outDir, "screenshots"), {
+  recursive: true,
+});
+
+const dossier = buildDossier(outDir, { text_max_bytes: 163840 });
+await writeFile(join(outDir, "dossier.json"), dossier);
